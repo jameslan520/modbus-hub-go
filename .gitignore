@@ -1,0 +1,19 @@
+# 构建产物
+build/bin
+build/*-dev.exe
+frontend/dist
+frontend/package.json.md5
+node_modules
+
+# 运行期生成（exe 同目录）
+channels.json
+settings.json
+history/
+debug-*.csv
+debug-*.txt
+
+# 编辑器 / 系统
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

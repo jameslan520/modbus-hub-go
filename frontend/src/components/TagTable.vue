@@ -1,0 +1,354 @@
+<template>
+  <div class="panel tag-panel">
+    <div class="panel-title">
+      <div class="tag-title-left">
+        <span>点表{{ channel ? ' — ' + channel.name : '' }}</span>
+        <span class="base-hint">实时值显示</span>
+        <el-radio-group v-model="base" size="small">
+          <el-radio-button value="dec">工程值</el-radio-button>
+          <el-radio-button value="hex">十六进制</el-radio-button>
+          <el-radio-button value="bin">二进制</el-radio-button>
+          <el-radio-button value="reg">寄存器</el-radio-button>
+        </el-radio-group>
+      </div>
+      <div>
+        <el-button size="small" type="primary" :disabled="!channel" @click="emit('add')">新增点</el-button>
+        <el-button size="small" :disabled="!selection.length" @click="onBatch">批量写入</el-button>
+        <el-button size="small" :disabled="!trendSelection.length" @click="onCompare">对比曲线</el-button>
+        <el-button size="small" :disabled="!channel" @click="emit('import')">导入 CSV</el-button>
+        <el-button size="small" :disabled="!channel || !channel.tags.length" @click="emit('export-def')">
+          导出定义
+        </el-button>
+      </div>
+    </div>
+    <div class="panel-body">
+      <el-table
+        v-if="channel"
+        :data="channel.tags"
+        size="small"
+        height="100%"
+        border
+        :row-class-name="rowClass"
+        @selection-change="onSelectionChange"
+      >
+        <el-table-column type="selection" width="42" />
+        <el-table-column prop="name" label="名称" min-width="110" />
+        <el-table-column prop="address" label="地址" width="70" />
+        <el-table-column label="类型" width="90">
+          <template #default="{row}">{{ dataTypeLabel(row.dataType) }}</template>
+        </el-table-column>
+        <el-table-column label="功能码" width="140">
+          <template #default="{row}">{{ functionCodeLabel(row.functionCode) }}</template>
+        </el-table-column>
+        <el-table-column :min-width="baseMeta.minWidth" class-name="col-value">
+          <template #header>
+            <el-tooltip :content="baseMeta.tip" placement="top" :show-after="200">
+              <span class="col-header">
+                {{ baseMeta.label }}
+                <el-icon><InfoFilled /></el-icon>
+              </span>
+            </el-tooltip>
+          </template>
+          <template #default="{row}">
+            <span
+              :class="valueClass(row)"
+              :title="cellTitle(row)"
+              @click="copyValue(row)"
+            >{{ displayValue(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="报警" width="96">
+          <template #default="{row}">
+            <el-tag
+              v-if="alarmState(row)"
+              size="small"
+              effect="dark"
+              :type="alarmKindType(alarmState(row))"
+            >
+              {{ alarmKindLabel(alarmState(row)) }}
+            </el-tag>
+            <el-tag v-else-if="hasAlarm(row)" size="small" type="success">正常</el-tag>
+            <span v-else class="alarm-off">未配置</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="质量" width="80">
+          <template #default="{row}">
+            <el-tag size="small" :type="quality(row) === 'Good' ? 'success' : 'danger'">
+              {{ quality(row) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="更新时间" width="140">
+          <template #default="{row}">{{ timestamp(row) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="300" fixed="right">
+          <template #default="{row}">
+            <el-button size="small" :disabled="!row.trendEnabled" @click="onTrend(row)">曲线</el-button>
+            <el-button size="small" :disabled="!row.trendEnabled" @click="emit('history', row)">历史</el-button>
+            <el-button size="small" :disabled="!isWritable(row)" @click="onWrite(row)">写入</el-button>
+            <el-button size="small" @click="emit('edit', row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="emit('remove', row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="请选择左侧通道" :image-size="80" />
+    </div>
+  </div>
+</template>
+
+<script setup>
+import {computed, ref} from 'vue'
+import {ElMessage, ElMessageBox} from 'element-plus'
+import {InfoFilled} from '@element-plus/icons-vue'
+import {alarmKindLabel, alarmKindType, dataTypeLabel, functionCodeLabel} from '../constants'
+
+// 实时值的四种显示口径：
+// dec 工程值（按倍率/小数位/单位），hex/bin 是该值的机器位模式（浮点数取 IEEE754），
+// reg 是报文里的原始寄存器（按线序，未做字序重排）——排查字序问题时看它最直观。
+// minWidth 按最长的内容算：hex 要放下 Double64 的 0x+16 位，reg 要放下 4 个寄存器，
+// bin 要放下 32 位（64 位允许按空格折成两行）。
+const BASE_META = {
+  dec: {
+    label: '实时值',
+    tip: '按点配置的倍率、小数位与单位换算后的工程值',
+    minWidth: 120
+  },
+  hex: {
+    label: '十六进制',
+    tip: '该值的机器位模式：UInt16 16 位，Float32/Int32 32 位（浮点数按 IEEE754），Double64 64 位',
+    minWidth: 160
+  },
+  bin: {
+    label: '二进制',
+    tip: '同上，以二进制按 4 位一组展示；Double64 为 64 位，会折成两行',
+    minWidth: 430
+  },
+  reg: {
+    label: '原始寄存器',
+    tip: '报文中该点位占用的原始寄存器，按线序排列（未做字序重排）',
+    minWidth: 200
+  }
+}
+
+const props = defineProps({
+  channel: {type: Object, default: null},
+  values: {type: Object, default: () => ({})}
+})
+const emit = defineEmits([
+  'add', 'edit', 'remove', 'write', 'batch-write', 'trend',
+  'history', 'compare', 'import', 'export-def'
+])
+
+const selection = ref([])
+const base = ref('dec')
+const baseMeta = computed(() => BASE_META[base.value] || BASE_META.dec)
+
+// 后端未下发 isWritable 字段，按功能码本地判定
+const rows = computed(() => (props.channel ? props.channel.tags : []))
+
+function tagValue(row) {
+  return props.values[row.id]
+}
+
+function displayValue(row) {
+  const v = tagValue(row)
+  if (!v || v.quality !== 'Good') {
+    return v && v.displayValue ? v.displayValue : '--'
+  }
+  switch (base.value) {
+    case 'hex':
+      return v.hexValue || '--'
+    case 'bin':
+      return v.binValue || '--'
+    case 'reg':
+      return registersText(v.registers)
+    default:
+      return v.displayValue || '--'
+  }
+}
+
+function registersText(regs) {
+  if (!regs || !regs.length) return '--'
+  return regs
+    .map(r => '0x' + Number(r & 0xffff).toString(16).toUpperCase().padStart(4, '0'))
+    .join(' ')
+}
+
+// 写入弹窗的默认值固定用工程值，避免切换口径后回填成十六进制
+function rawDisplay(row) {
+  const v = tagValue(row)
+  return v && v.displayValue ? v.displayValue : '--'
+}
+
+function cellTitle(row) {
+  return `${baseMeta.value.tip}\n点击复制：${displayValue(row)}`
+}
+
+async function copyValue(row) {
+  const text = displayValue(row)
+  if (!text || text === '--') return
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success({message: `已复制 ${row.name} 的${baseMeta.value.label}`, duration: 1200})
+  } catch (e) {
+    ElMessage.warning('复制失败，请手动选中文本复制')
+  }
+}
+
+function quality(row) {
+  const v = tagValue(row)
+  return v && v.quality ? v.quality : 'Bad'
+}
+
+// 报警方向由后端随采集值下发，前端不重复判阈值
+function alarmState(row) {
+  const v = tagValue(row)
+  return v && v.alarmState ? v.alarmState : ''
+}
+
+// 配了报警（启用了且有任一限值）才显示"正常"，否则提示未配置
+function hasAlarm(row) {
+  return !!row.alarmEnabled &&
+    (row.alarmHigh !== null && row.alarmHigh !== undefined ||
+      row.alarmLow !== null && row.alarmLow !== undefined)
+}
+
+function rowClass({row}) {
+  return alarmState(row) ? 'row-alarm' : ''
+}
+
+const trendSelection = computed(() => selection.value.filter(t => t.trendEnabled))
+
+function onCompare() {
+  if (!trendSelection.value.length) {
+    ElMessage.warning('请勾选至少 1 个启用了曲线记录的点位')
+    return
+  }
+  if (trendSelection.value.length > 8) {
+    ElMessage.warning('一次最多对比 8 个点位')
+    return
+  }
+  emit('compare', trendSelection.value)
+}
+
+function timestamp(row) {
+  const v = tagValue(row)
+  return v && v.timestamp ? v.timestamp : ''
+}
+
+function valueClass(row) {
+  return quality(row) === 'Good' ? 'value-good' : 'value-bad'
+}
+
+function isWritable(row) {
+  return row.functionCode === 6 || row.functionCode === 16
+}
+
+function onSelectionChange(rows) {
+  selection.value = rows
+}
+
+async function onWrite(row) {
+  if (!isWritable(row)) {
+    ElMessage.warning('只读点（功能码 03）不可写入')
+    return
+  }
+  try {
+    const {value} = await ElMessageBox.prompt(
+      `写入 ${row.name}（地址 ${row.address}，${dataTypeLabel(row.dataType)}）`,
+      '写入寄存器',
+      {inputPlaceholder: '请输入数值，可带单位', inputValue: stripUnit(rawDisplay(row))}
+    )
+    if (value === null || value === undefined || value === '') return
+    emit('write', row, String(value).trim())
+  } catch (e) {
+    // 用户取消
+  }
+}
+
+function stripUnit(text) {
+  if (!text) return ''
+  const m = String(text).trim().split(' ')[0]
+  return isNaN(Number(m)) ? '' : m
+}
+
+function onTrend(row) {
+  if (!row.trendEnabled) {
+    ElMessage.warning('该点位未启用曲线记录，请在点参数中勾选后重试')
+    return
+  }
+  emit('trend', row)
+}
+
+function onBatch() {
+  const writable = selection.value.filter(isWritable)
+  if (writable.length < 2) {
+    ElMessage.warning('请至少勾选 2 个地址连续的可写点（功能码 06/16）')
+    return
+  }
+  emit('batch-write', writable)
+}
+</script>
+
+<style scoped>
+.tag-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+.tag-title-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.base-hint {
+  font-weight: 400;
+  font-size: 12px;
+  color: #909399;
+  margin-left: 4px;
+}
+
+.col-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 二进制 64 位（79 字符）放不进一行时，只允许在 4 位组的空格处折行，
+   不能按字符硬断（否则 0x 前缀和位组会被切断）。td 带 class-name="col-value"，
+   但 .cell 是 el-table 内部元素，必须穿透 scoped。 */
+:deep(.col-value .cell) {
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  text-overflow: clip;
+}
+
+.value-good {
+  font-weight: 600;
+  color: #1f7a3d;
+  font-family: Consolas, monospace;
+  cursor: pointer;
+}
+
+.value-bad {
+  color: #b03030;
+  font-family: Consolas, monospace;
+  cursor: pointer;
+}
+
+.alarm-off {
+  color: #c0c4cc;
+  font-size: 12px;
+}
+
+/* 报警行整行染色，扫一眼就能定位 */
+:deep(.row-alarm) {
+  background: #fdf0f0;
+}
+
+:deep(.row-alarm:hover > td) {
+  background: #fbe3e3 !important;
+}
+</style>
