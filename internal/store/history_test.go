@@ -19,6 +19,7 @@ func TestAppendDisabled(t *testing.T) {
 
 func TestAppendAndQuery(t *testing.T) {
 	h := New(t.TempDir(), Settings{Enabled: true, RetentionDays: 30, MaxSizeMB: 10})
+	defer h.Close() // 断言失败时也要放掉分片句柄，否则 Windows 上 TempDir 清理不掉
 	base := time.Date(2026, 10, 9, 10, 0, 0, 0, time.Local)
 	for i := 0; i < 100; i++ {
 		ts := base.Add(time.Duration(i) * time.Second)
@@ -47,13 +48,54 @@ func TestAppendAndQuery(t *testing.T) {
 		t.Fatalf("窗口内应 10 点，实际 %d", len(pts))
 	}
 
-	// 降采样：只保留首尾
-	pts, _ = h.Query("tag1", 0, 0, 2)
+	// 降采样：只保留首尾。
+	// 这里必须给显式区间：传 (0,0) 是「全部」语义，而数据时间戳固定在 2026-10-09，
+	// 换个日期跑就会落进"最近一天"的默认窗口而查不到 —— 当初就是这么踩的。
+	pts, _ = h.Query("tag1", base.UnixMilli()-1, base.Add(99*time.Second).UnixMilli()+1, 2)
 	if len(pts) != 2 {
 		t.Fatalf("降采样到 2 点，实际 %d", len(pts))
 	}
+	if pts[0].V != 0 || pts[1].V != 99 {
+		t.Fatalf("降采样应保留首尾: %+v", pts)
+	}
 	if err := h.Close(); err != nil {
 		t.Fatalf("关闭失败: %v", err)
+	}
+}
+
+// 「全部」(from=to=0) 必须扫全部分片，不能回落成「最近一天」——
+// 前端「全部」按钮就传 (0,0)，回落的话用户只能看到 24 小时数据。
+// 数据刻意放在很久以前，这样不管哪天跑测试都能验出回归。
+func TestQueryAllSpansEveryShard(t *testing.T) {
+	h := New(t.TempDir(), Settings{Enabled: true})
+	base := time.Date(2024, 3, 1, 8, 0, 0, 0, time.Local)
+	for i := 0; i < 5; i++ {
+		if err := h.Append("t", base.AddDate(0, 0, i), float64(i)); err != nil {
+			t.Fatalf("写入失败: %v", err)
+		}
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("关闭失败: %v", err)
+	}
+
+	pts, err := h.Query("t", 0, 0, 0)
+	if err != nil {
+		t.Fatalf("查询全部失败: %v", err)
+	}
+	if len(pts) != 5 {
+		t.Fatalf("「全部」应查到 5 点（跨 5 个分片），实际 %d", len(pts))
+	}
+	if pts[0].V != 0 || pts[4].V != 4 {
+		t.Fatalf("跨分片顺序不对: %+v", pts)
+	}
+
+	// 对照：显式区间仍按窗口裁剪
+	pts, err = h.Query("t", base.UnixMilli(), base.UnixMilli(), 0)
+	if err != nil {
+		t.Fatalf("单点区间查询失败: %v", err)
+	}
+	if len(pts) != 1 {
+		t.Fatalf("单点区间应 1 点，实际 %d", len(pts))
 	}
 }
 

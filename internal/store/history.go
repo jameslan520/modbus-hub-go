@@ -166,26 +166,46 @@ func (h *History) Close() error {
 }
 
 // Query 读某个点位在 [from, to] 毫秒区间内的数据，超量时等间隔降采样。
-// to<=0 表示到现在；maxPoints<=0 表示不降采样。
+// 语义（前端「全部」按钮依赖这条，不能改成只认 from<=0）：
+//   - 两者都 <=0：全部，扫该点位所有分片、不做时间过滤
+//   - 只有 to<=0：到现在
+//   - 只有 from<=0：最近一天
+//
+// maxPoints<=0 表示不降采样。
 func (h *History) Query(tagID string, from, to int64, maxPoints int) ([]trend.Point, error) {
 	if tagID == "" {
 		return []trend.Point{}, nil
 	}
-	if to <= 0 {
-		to = time.Now().UnixMilli()
-	}
-	if from <= 0 {
-		from = to - 24*3600*1000 // 默认最近一天
-	}
-	if from > to {
-		from, to = to, from
+	all := from <= 0 && to <= 0
+	if !all {
+		if to <= 0 {
+			to = time.Now().UnixMilli()
+		}
+		if from <= 0 {
+			from = to - 24*3600*1000 // 默认最近一天
+		}
+		if from > to {
+			from, to = to, from
+		}
 	}
 
-	days := dayRange(from, to)
+	dir := filepath.Join(h.root, safeName(tagID))
+	var shards []string
+	if all {
+		// 全部：直接按磁盘上的分片扫，不能用 dayRange 推（没有时间边界可推）
+		var err error
+		if shards, err = listShards(dir); err != nil {
+			return nil, err
+		}
+	} else {
+		for _, day := range dayRange(from, to) {
+			shards = append(shards, day+".dat")
+		}
+	}
+
 	out := make([]trend.Point, 0, 1024)
-	for _, day := range days {
-		path := filepath.Join(h.root, safeName(tagID), day+".dat")
-		data, err := os.ReadFile(path)
+	for _, name := range shards {
+		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -194,7 +214,7 @@ func (h *History) Query(tagID string, from, to int64, maxPoints int) ([]trend.Po
 		}
 		for off := 0; off+RecordSize <= len(data); off += RecordSize {
 			ms := int64(binary.LittleEndian.Uint64(data[off : off+8]))
-			if ms < from || ms > to {
+			if !all && (ms < from || ms > to) {
 				continue
 			}
 			bits := binary.LittleEndian.Uint64(data[off+8 : off+16])
