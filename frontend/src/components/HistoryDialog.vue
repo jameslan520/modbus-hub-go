@@ -118,7 +118,8 @@ echarts.use([LineChart, GridComponent, TooltipComponent, DataZoomComponent, Canv
 const props = defineProps({
   visible: {type: Boolean, default: false},
   tag: {type: Object, default: null},
-  channel: {type: Object, default: null}
+  // 候选点位列表：多通道监视时用合并后的行
+  tags: {type: Array, default: () => []}
 })
 const emit = defineEmits(['update:visible'])
 
@@ -137,9 +138,12 @@ const settings = ref({enabled: false, retentionDays: 30, maxSizeMB: 512})
 let resizeObserver = null
 
 const tags = computed(() => {
-  const list = props.channel && props.channel.tags ? props.channel.tags : []
+  const list = props.tags || []
   if (!list.length && props.tag) return [props.tag]
-  return list.filter(t => t.trendEnabled)
+  const trend = list.filter(t => t.trendEnabled)
+  // 没开曲线记录的点查历史也没数据，只在"一个都没有"时才退回兜底，
+  // 否则从某个未记录的点进来的话会看不到目标点位
+  return trend.length ? trend : list
 })
 
 const title = computed(() => {

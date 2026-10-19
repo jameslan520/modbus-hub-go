@@ -7,6 +7,7 @@ import {store} from '../models';
 import {trend} from '../models';
 import {hub} from '../models';
 import {serialx} from '../models';
+import {modbus} from '../models';
 import {tagio} from '../models';
 
 export function AckAlarm(arg1:string):Promise<boolean>;
@@ -29,11 +30,11 @@ export function ExportHistory(arg1:string,arg2:string,arg3:number,arg4:number):P
 
 export function ExportLogs():Promise<string>;
 
-export function ExportTagDefinitions(arg1:string):Promise<string>;
+export function ExportTagDefinitions(arg1:Array<string>):Promise<string>;
 
 export function ExportTagTemplate():Promise<string>;
 
-export function ExportTags(arg1:string):Promise<string>;
+export function ExportTags(arg1:Array<string>):Promise<string>;
 
 export function ExportTrend(arg1:string,arg2:string,arg3:number):Promise<string>;
 
@@ -75,7 +76,9 @@ export function NewChannel(arg1:string):Promise<models.ChannelConfig>;
 
 export function NewTag(arg1:string):Promise<models.TagPoint>;
 
-export function ParseTagFile(arg1:string):Promise<tagio.Preview>;
+export function ParseAddressInput(arg1:string,arg2:string):Promise<modbus.AddressResult>;
+
+export function ParseTagFile(arg1:string,arg2:string):Promise<tagio.Preview>;
 
 export function PickTagFile():Promise<string>;
 

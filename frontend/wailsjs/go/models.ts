@@ -201,6 +201,37 @@ export namespace main {
 
 }
 
+export namespace modbus {
+	
+	export class AddressResult {
+	    ok: boolean;
+	    value: number;
+	    area: string;
+	    error: string;
+	    note: string;
+	    dec: string;
+	    hex: string;
+	    plc: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AddressResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.value = source["value"];
+	        this.area = source["area"];
+	        this.error = source["error"];
+	        this.note = source["note"];
+	        this.dec = source["dec"];
+	        this.hex = source["hex"];
+	        this.plc = source["plc"];
+	    }
+	}
+
+}
+
 export namespace models {
 	
 	export class CalibrationPoint {

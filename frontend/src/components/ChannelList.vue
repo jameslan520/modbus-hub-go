@@ -4,6 +4,7 @@
       <span>通道列表</span>
       <el-button size="small" type="primary" @click="emit('add')">新增</el-button>
     </div>
+    <div class="watch-tip">点通道=只看它；勾选=多个通道同屏显示</div>
     <div class="panel-body">
       <div
         v-for="ch in channels"
@@ -13,6 +14,13 @@
         @click="emit('select', ch.id)"
       >
         <div class="channel-row">
+          <span class="channel-check" @click.stop>
+            <el-checkbox
+              :model-value="watched(ch.id)"
+              size="small"
+              @change="v => emit('watch', ch.id, v)"
+            />
+          </span>
           <span class="channel-name">{{ ch.name }}</span>
           <el-tag size="small" :type="stateMeta(ch.id).type">{{ stateMeta(ch.id).label }}</el-tag>
         </div>
@@ -40,9 +48,15 @@ import {STATE_META, parityLabel, stopBitsLabel} from '../constants'
 const props = defineProps({
   channels: {type: Array, default: () => []},
   runtime: {type: Object, default: () => ({})},
-  currentId: {type: String, default: ''}
+  currentId: {type: String, default: ''},
+  // 勾选后并入点表监视（可以同时监视多个通道）
+  watchedIds: {type: Array, default: () => []}
 })
-const emit = defineEmits(['select', 'add', 'edit', 'remove', 'start', 'stop'])
+const emit = defineEmits(['select', 'add', 'edit', 'remove', 'start', 'stop', 'watch'])
+
+function watched(id) {
+  return props.watchedIds.includes(id)
+}
 
 function rt(id) {
   return props.runtime[id] || {state: 'Disconnected', txCount: 0, rxCount: 0, running: false}
@@ -57,6 +71,14 @@ function stateMeta(id) {
 .channel-panel {
   width: 300px;
   flex-shrink: 0;
+}
+
+.watch-tip {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #909399;
+  background: #f7f9fc;
+  border-bottom: 1px solid #eef2f7;
 }
 
 .channel-item {
@@ -77,11 +99,21 @@ function stateMeta(id) {
 .channel-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 4px;
+}
+
+/* 勾选框要吃掉点击不再冒泡到整行（否则勾一次就变成"只看这个"了） */
+.channel-check {
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
 .channel-name {
   font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .channel-meta {

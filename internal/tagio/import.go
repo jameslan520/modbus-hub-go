@@ -16,6 +16,7 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 
+	"modbus-hub-go/internal/modbus"
 	"modbus-hub-go/internal/models"
 )
 
@@ -81,7 +82,13 @@ func Rows(tags []models.TagPoint) [][]string {
 
 // ReadFile 读一个 CSV 文件并解析成点位。
 // 编码上先按 UTF-8（兼容带 BOM），失败再按 GBK——Excel 另存的 CSV 中文是 GBK。
+// ReadFile 读一个 CSV 文件并按十进制地址解析（保持旧的默认行为）
 func ReadFile(path string) (Preview, error) {
+	return ReadFileWith(path, modbus.FormatDec)
+}
+
+// ReadFileWith 同上，地址列按指定形式解释（十进制 / 十六进制 / PLC 地址）
+func ReadFileWith(path string, format modbus.AddressFormat) (Preview, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Preview{}, err
@@ -90,7 +97,7 @@ func ReadFile(path string) (Preview, error) {
 	if err != nil {
 		return Preview{}, err
 	}
-	return Parse(text, path)
+	return ParseWith(text, path, format)
 }
 
 func decode(data []byte) (string, error) {
@@ -113,7 +120,15 @@ func decode(data []byte) (string, error) {
 }
 
 // Parse 解析 CSV 文本。path 只用于回显给界面。
+// Parse 按十进制地址解析（保持旧的默认行为）
 func Parse(text, path string) (Preview, error) {
+	return ParseWith(text, path, modbus.FormatDec)
+}
+
+// ParseWith 解析 CSV 文本，地址列按指定形式解释。
+// 整份文件统一用一种形式：若允许逐行混合，40001 到底十进制还是 PLC 无法判断，
+// 所以形式由导入界面选定，不在解析时猜。
+func ParseWith(text, path string, format modbus.AddressFormat) (Preview, error) {
 	reader := csv.NewReader(strings.NewReader(text))
 	reader.Comma = detectComma(text)
 	reader.FieldsPerRecord = -1 // 允许行长度不一致，逐行校验时再报错
@@ -136,10 +151,10 @@ func Parse(text, path string) (Preview, error) {
 	// 表头：出现"名称"或 name 就认为第一行是表头
 	start := 0
 	col := defaultColumns()
-	if looksLikeHeader(records[0]) {
+		if looksLikeHeader(records[0]) {
 		start = 1
 		p.Header = records[0]
-		col, err = mapColumns(records[0])
+		col, err = mapColumns(records[0], format)
 		if err != nil {
 			return p, err
 		}
@@ -175,11 +190,14 @@ type columns struct {
 	decs    int
 	enabled int
 	trend   int
+	// addrFormat 地址列的书写形式（十进制 / 十六进制 / PLC 地址）
+	addrFormat modbus.AddressFormat
 }
 
 func defaultColumns() columns {
 	return columns{name: 1, slave: 2, fc: 3, address: 4, dtype: 5,
-		unit: 6, scale: 7, offset: 8, decs: 9, enabled: 10, trend: 11}
+		unit: 6, scale: 7, offset: 8, decs: 9, enabled: 10, trend: 11,
+		addrFormat: modbus.FormatDec}
 }
 
 var headerAliases = map[string][]string{
@@ -211,9 +229,10 @@ func looksLikeHeader(row []string) bool {
 	return false
 }
 
-func mapColumns(row []string) (columns, error) {
+func mapColumns(row []string, format modbus.AddressFormat) (columns, error) {
 	c := columns{name: -1, slave: -1, fc: -1, address: -1, dtype: -1,
-		unit: -1, scale: -1, offset: -1, decs: -1, enabled: -1, trend: -1}
+		unit: -1, scale: -1, offset: -1, decs: -1, enabled: -1, trend: -1,
+		addrFormat: format}
 	hit := map[string]int{}
 	for idx, cell := range row {
 		key := norm(cell)
@@ -273,11 +292,16 @@ func parseRow(row []string, c columns, line int) (models.TagPoint, RowError) {
 	tag.Name = name
 
 	addrText := cell(row, c.address)
-	addr, err := parseUint(addrText)
-	if err != nil || addr > 65535 {
-		return fail("地址无效：" + orDash(addrText))
+	res := modbus.ParseAddress(c.addrFormat, addrText)
+	if !res.OK {
+		return fail("地址无效：" + res.Error)
 	}
-	tag.Address = uint16(addr)
+	// 非保持寄存器区（0x/1x/3x）本项目读写不了，导入时就拦下，别等现场发现读不到
+	if modbus.RegisterArea(res.Area) != modbus.AreaHolding {
+		return fail("地址无效：" + addrText + " 属于" + modbus.RegisterArea(res.Area).Label() +
+			"区，本项目功能码只支持保持寄存器（4xxxx）")
+	}
+	tag.Address = uint16(res.Value)
 
 	slave := 0
 	if s := cell(row, c.slave); s != "" {

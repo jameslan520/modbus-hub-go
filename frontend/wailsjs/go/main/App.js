@@ -134,8 +134,12 @@ export function NewTag(arg1) {
   return window['go']['main']['App']['NewTag'](arg1);
 }
 
-export function ParseTagFile(arg1) {
-  return window['go']['main']['App']['ParseTagFile'](arg1);
+export function ParseAddressInput(arg1, arg2) {
+  return window['go']['main']['App']['ParseAddressInput'](arg1, arg2);
+}
+
+export function ParseTagFile(arg1, arg2) {
+  return window['go']['main']['App']['ParseTagFile'](arg1, arg2);
 }
 
 export function PickTagFile() {

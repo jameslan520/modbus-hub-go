@@ -19,7 +19,26 @@
         </el-select>
       </el-form-item>
       <el-form-item label="寄存器地址">
-        <el-input-number v-model="form.address" :min="0" :max="65535" />
+        <div class="addr-field">
+          <el-select
+            v-model="form.addrFormat"
+            size="small"
+            class="addr-mode"
+            @change="onAddrFormatChange"
+          >
+            <el-option v-for="f in ADDRESS_FORMATS" :key="f.value" :label="f.label" :value="f.value" />
+          </el-select>
+          <el-input
+            v-model="form.addrText"
+            size="small"
+            class="addr-input"
+            clearable
+            :placeholder="addrPlaceholder"
+          />
+        </div>
+        <div class="addr-hint" :class="{'addr-err': addrBad}">
+          {{ addrHint }}
+        </div>
       </el-form-item>
       <el-form-item label="数据类型">
         <el-select v-model="form.dataType">
@@ -91,7 +110,8 @@
 <script setup>
 import {computed, ref, watch} from 'vue'
 import {ElMessage} from 'element-plus'
-import {DATA_TYPES, FUNCTION_CODES} from '../constants'
+import {ADDRESS_FORMATS, DATA_TYPES, FUNCTION_CODES, addressFormatTip, addressTexts} from '../constants'
+import {ParseAddressInput} from '../../wailsjs/go/main/App'
 
 const props = defineProps({
   visible: {type: Boolean, default: false},
@@ -103,6 +123,13 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'submit'])
 
 const form = ref(null)
+
+// 地址输入："形式 + 文本" 两块，真正的数值由后端 ParseAddressInput 判定。
+// 判定放后端是因为 40001 到底是十进制还是 PLC 写法取决于所选形式，
+// 规则一旦两处各写一份迟早会走偏，而后端有单测兜着。
+const addrResult = ref(null)
+const addrSeq = ref(0)
+let addrTimer = 0
 
 const writableTags = computed(() => {
   if (!props.channel || !props.channel.tags) return []
@@ -128,8 +155,113 @@ watch(() => props.visible, v => {
   t.alarmActionTag = t.alarmActionTag || ''
   t.alarmActionText = t.alarmActionText || ''
   t.alarmEnabled = !!t.alarmEnabled
+  // 地址按十进制回填，想用别的形式自行在下拉里切（切换时会自动换算）
+  t.addrFormat = 'dec'
+  t.addrText = String(t.address === undefined || t.address === null ? 0 : t.address)
   form.value = t
+  addrResult.value = null
+  scheduleParse()
 })
+
+// 切换形式时把当前值换算成该形式的写法，别让用户自己去翻 PLC 地址表
+function onAddrFormatChange(f) {
+  if (!form.value) return
+  const base = addrResult.value && addrResult.value.ok
+    ? addrResult.value.value
+    : Number(form.value.address) || 0
+  const texts = addressTexts(base)
+  form.value.addrText = f === 'hex' ? texts.hex : f === 'plc' ? texts.plc : texts.dec
+  scheduleParse()
+}
+
+const addrPlaceholder = computed(() => {
+  const f = form.value ? form.value.addrFormat : 'dec'
+  return f === 'hex' ? '0x0064' : f === 'plc' ? '40001' : '0 ~ 65535'
+})
+
+// 解析成功但落在不支持的区（线圈/离散输入/输入寄存器）也算不可用：
+// 后端这时给的 plc 字段是按保持寄存器折算的，照着显示会把人带沟里，直接按警示出。
+const addrUnusable = computed(() =>
+  !!addrResult.value && addrResult.value.ok &&
+  !!addrResult.value.area && addrResult.value.area !== 'holding'
+)
+const addrBad = computed(() =>
+  (!!addrResult.value && !addrResult.value.ok) || addrUnusable.value
+)
+
+const addrHint = computed(() => {
+  const r = addrResult.value
+  if (!form.value) return ''
+  if (!r) return addressFormatTip(form.value.addrFormat)
+  if (!r.ok) return '✗ ' + r.error
+  if (addrUnusable.value) {
+    return '⚠ ' + (r.note ||
+      ('这是' + areaLabel(r.area) + '区地址，本项目只支持保持寄存器（4xxxx）'))
+  }
+  const parts = [`协议地址 ${r.dec}`, `十六进制 ${r.hex}`, `PLC ${r.plc}`]
+  if (r.note) parts.push(r.note)
+  return '✓ ' + parts.join(' · ')
+})
+
+watch(() => (form.value ? form.value.addrText : ''), () => scheduleParse())
+
+// 绑定调用是本机进程内的，很快，但边打字边请求没意义，稍等一拍再发
+function scheduleParse() {
+  if (addrTimer) window.clearTimeout(addrTimer)
+  addrTimer = window.setTimeout(() => {
+    addrTimer = 0
+    runParse()
+  }, 150)
+}
+
+async function runParse() {
+  if (!form.value) return
+  const text = String(form.value.addrText === undefined || form.value.addrText === null
+    ? '' : form.value.addrText).trim()
+  if (text === '') {
+    addrResult.value = null
+    return
+  }
+  const seq = ++addrSeq.value
+  try {
+    const res = await ParseAddressInput(form.value.addrFormat, text)
+    if (seq === addrSeq.value) addrResult.value = res
+  } catch (e) {
+    if (seq === addrSeq.value) addrResult.value = {ok: false, error: String(e)}
+  }
+}
+
+async function resolveAddress() {
+  // 提交时不复用预览结果（可能被防抖漏掉最后一次），当场解析一遍为准
+  const text = String(form.value.addrText === undefined || form.value.addrText === null
+    ? '' : form.value.addrText).trim()
+  if (text === '') {
+    ElMessage.warning('请填写寄存器地址')
+    return null
+  }
+  let res
+  try {
+    res = await ParseAddressInput(form.value.addrFormat, text)
+  } catch (e) {
+    ElMessage.warning(String(e))
+    return null
+  }
+  if (!res.ok) {
+    ElMessage.warning(res.error)
+    return null
+  }
+  // 本项目功能码只有 03/06/16，读写不了其它区，存下来只会让现场排查半天
+  if (res.area && res.area !== 'holding') {
+    ElMessage.warning('这是' + areaLabel(res.area) + '区的地址，本项目只支持保持寄存器（4xxxx）')
+    return null
+  }
+  addrResult.value = res
+  return res
+}
+
+function areaLabel(area) {
+  return {coil: '线圈', discrete: '离散输入', input: '输入寄存器', holding: '保持寄存器'}[area] || area
+}
 
 function parseNum(text) {
   const s = String(text === null || text === undefined ? '' : text).trim()
@@ -138,7 +270,7 @@ function parseNum(text) {
   return Number.isFinite(v) ? v : undefined // undefined 表示填了但不是数字
 }
 
-function onOk() {
+async function onOk() {
   if (!form.value) return
   if (!form.value.name || !form.value.name.trim()) {
     ElMessage.warning('请填写点名称')
@@ -146,6 +278,10 @@ function onOk() {
   }
   form.value.name = form.value.name.trim()
   if (typeof form.value.unit !== 'string') form.value.unit = ''
+
+  const addr = await resolveAddress()
+  if (!addr) return
+  form.value.address = addr.value
 
   const high = parseNum(form.value.alarmHighText)
   const low = parseNum(form.value.alarmLowText)
@@ -170,6 +306,9 @@ function onOk() {
   }
   delete form.value.alarmHighText
   delete form.value.alarmLowText
+  // 这两项只服务于输入框，不能落到点位配置里
+  delete form.value.addrFormat
+  delete form.value.addrText
   emit('submit', form.value)
   emit('update:visible', false)
 }
@@ -189,5 +328,35 @@ function onOk() {
 .action-value {
   width: 170px;
   margin-left: 8px;
+}
+
+.addr-field {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.addr-mode {
+  width: 108px;
+  flex-shrink: 0;
+}
+
+.addr-input {
+  flex: 1;
+  font-family: Consolas, monospace;
+}
+
+/* 解析结果/错误提示放在输入框下一行，不挤占表单宽度 */
+.addr-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #909399;
+  font-family: Consolas, monospace;
+  word-break: break-all;
+}
+
+.addr-err {
+  color: #d03030;
 }
 </style>

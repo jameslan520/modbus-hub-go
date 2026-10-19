@@ -8,6 +8,7 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 
+	"modbus-hub-go/internal/modbus"
 	"modbus-hub-go/internal/models"
 )
 
@@ -232,6 +233,70 @@ func joinLine(fields []string) string {
 		out += f
 	}
 	return out
+}
+
+// 地址列的三种书写形式：整份文件用同一种，由导入界面选定
+func TestParseAddressFormats(t *testing.T) {
+	text := "名称,地址\r\n" +
+		"温度,100\r\n" +
+		"压力,200\r\n"
+
+	dec, err := ParseWith(text, "x.csv", modbus.FormatDec)
+	if err != nil {
+		t.Fatalf("十进制解析失败: %v", err)
+	}
+	if len(dec.Tags) != 2 || dec.Tags[0].Address != 100 || dec.Tags[1].Address != 200 {
+		t.Fatalf("十进制地址不对: %+v", dec.Tags)
+	}
+
+	hexText := "名称,地址\r\n温度,0x64\r\n压力,00C8\r\n"
+	hexRows, err := ParseWith(hexText, "x.csv", modbus.FormatHex)
+	if err != nil {
+		t.Fatalf("十六进制解析失败: %v", err)
+	}
+	if len(hexRows.Tags) != 2 || hexRows.Tags[0].Address != 100 || hexRows.Tags[1].Address != 200 {
+		t.Fatalf("十六进制地址不对: %+v", hexRows.Tags)
+	}
+
+	plcText := "名称,地址\r\n温度,40101\r\n压力,400201\r\n"
+	plcRows, err := ParseWith(plcText, "x.csv", modbus.FormatPLC)
+	if err != nil {
+		t.Fatalf("PLC 解析失败: %v", err)
+	}
+	if len(plcRows.Tags) != 2 || plcRows.Tags[0].Address != 100 || plcRows.Tags[1].Address != 200 {
+		t.Fatalf("PLC 地址不对: %+v", plcRows.Tags)
+	}
+}
+
+// 写错的地址要落到错误行并带可读原因，而不是静默变成别的地址
+func TestParseBadAddressReported(t *testing.T) {
+	bad := parseCSV(t, modbus.FormatPLC, "名称,地址\r\n温度,4001\r\n")
+	if len(bad.Errors) != 1 {
+		t.Fatalf("PLC 地址位数不够应报错: %+v", bad.Errors)
+	}
+	if bad.Errors[0].Line != 2 {
+		t.Fatalf("错误行号应为 2，实际 %d", bad.Errors[0].Line)
+	}
+
+	// 非保持寄存器区本项目读写不了，导入时就拦下
+	area := parseCSV(t, modbus.FormatPLC, "名称,地址\r\n液位,30001\r\n")
+	if len(area.Errors) != 1 {
+		t.Fatalf("输入寄存器区应报错: %+v", area.Errors)
+	}
+
+	over := parseCSV(t, modbus.FormatDec, "名称,地址\r\n液位,70000\r\n")
+	if len(over.Errors) != 1 {
+		t.Fatalf("超范围地址应报错: %+v", over.Errors)
+	}
+}
+
+func parseCSV(t *testing.T, format modbus.AddressFormat, text string) Preview {
+	t.Helper()
+	p, err := ParseWith(text, "x.csv", format)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	return p
 }
 
 func TestParseBoolAndType(t *testing.T) {

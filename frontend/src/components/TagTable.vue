@@ -2,8 +2,10 @@
   <div class="panel tag-panel">
     <div class="panel-title">
       <div class="tag-title-left">
-        <span>点表{{ channel ? ' — ' + channel.name : '' }}</span>
-        <span class="base-hint">实时值显示</span>
+        <span>点表{{ panelLabel }}</span>
+        <span v-if="multi && primary" class="base-hint">
+          新增 / 导入 / 导出作用于「{{ primary.name }}」
+        </span>
         <el-radio-group v-model="base" size="small">
           <el-radio-button value="dec">工程值</el-radio-button>
           <el-radio-button value="hex">十六进制</el-radio-button>
@@ -12,19 +14,20 @@
         </el-radio-group>
       </div>
       <div>
-        <el-button size="small" type="primary" :disabled="!channel" @click="emit('add')">新增点</el-button>
+        <el-button size="small" type="primary" :disabled="!primary" @click="emit('add')">新增点</el-button>
         <el-button size="small" :disabled="!selection.length" @click="onBatch">批量写入</el-button>
         <el-button size="small" :disabled="!trendSelection.length" @click="onCompare">对比曲线</el-button>
-        <el-button size="small" :disabled="!channel" @click="emit('import')">导入 CSV</el-button>
-        <el-button size="small" :disabled="!channel || !channel.tags.length" @click="emit('export-def')">
+        <el-button size="small" :disabled="!primary" @click="emit('import')">导入 CSV</el-button>
+        <el-button size="small" :disabled="!primary || !rows.length" @click="emit('export-def')">
           导出定义
         </el-button>
       </div>
     </div>
     <div class="panel-body">
       <el-table
-        v-if="channel"
-        :data="channel.tags"
+        v-if="rows.length || primary"
+        :data="rows"
+        row-key="id"
         size="small"
         height="100%"
         border
@@ -32,8 +35,15 @@
         @selection-change="onSelectionChange"
       >
         <el-table-column type="selection" width="42" />
+        <el-table-column v-if="multi" prop="channelName" label="通道" min-width="110" />
         <el-table-column prop="name" label="名称" min-width="110" />
-        <el-table-column prop="address" label="地址" width="70" />
+        <el-table-column label="地址" width="76">
+          <template #default="{row}">
+            <el-tooltip :content="addressTip(row)" placement="top" :show-after="200">
+              <span class="mono">{{ row.address }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column label="类型" width="90">
           <template #default="{row}">{{ dataTypeLabel(row.dataType) }}</template>
         </el-table-column>
@@ -91,7 +101,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <el-empty v-else description="请选择左侧通道" :image-size="80" />
+      <el-empty v-else description="请在左侧选择要监视的通道" :image-size="80" />
     </div>
   </div>
 </template>
@@ -100,7 +110,13 @@
 import {computed, ref} from 'vue'
 import {ElMessage, ElMessageBox} from 'element-plus'
 import {InfoFilled} from '@element-plus/icons-vue'
-import {alarmKindLabel, alarmKindType, dataTypeLabel, functionCodeLabel} from '../constants'
+import {
+  addressTexts,
+  alarmKindLabel,
+  alarmKindType,
+  dataTypeLabel,
+  functionCodeLabel
+} from '../constants'
 
 // 实时值的四种显示口径：
 // dec 工程值（按倍率/小数位/单位），hex/bin 是该值的机器位模式（浮点数取 IEEE754），
@@ -131,7 +147,12 @@ const BASE_META = {
 }
 
 const props = defineProps({
-  channel: {type: Object, default: null},
+  // 已按通道合并好的点位行，每行带 channelId / channelName 标记归属
+  rows: {type: Array, default: () => []},
+  // 主通道：新增点、导入、导出定义都作用在它身上
+  primary: {type: Object, default: null},
+  // 同时监视多个通道时显示「通道」列
+  multi: {type: Boolean, default: false},
   values: {type: Object, default: () => ({})}
 })
 const emit = defineEmits([
@@ -143,11 +164,20 @@ const selection = ref([])
 const base = ref('dec')
 const baseMeta = computed(() => BASE_META[base.value] || BASE_META.dec)
 
-// 后端未下发 isWritable 字段，按功能码本地判定
-const rows = computed(() => (props.channel ? props.channel.tags : []))
+const panelLabel = computed(() => {
+  if (props.multi) return ` — 监视 ${props.rows.length} 点 / 多通道`
+  return props.primary ? ` — ${props.primary.name}` : ''
+})
 
 function tagValue(row) {
   return props.values[row.id]
+}
+
+// 地址列默认显示十进制协议地址，三种写法挂在悬浮提示里：
+// 现场对着 PLC 图纸找点时，手上多半是 40001 这种写法。
+function addressTip(row) {
+  const t = addressTexts(row.address)
+  return `十进制 ${t.dec}\n十六进制 ${t.hex}\nPLC 地址 ${t.plc}`
 }
 
 function displayValue(row) {
@@ -286,6 +316,13 @@ function onBatch() {
     ElMessage.warning('请至少勾选 2 个地址连续的可写点（功能码 06/16）')
     return
   }
+  // 功能码 16 是一帧写多个寄存器，天然不能跨串口，跨通道只能拆成多次请求。
+  // 批量写入对话框按地址排序并要求首尾相接，混着两个通道会排出一条假序列，所以这里直接拦。
+  const channels = new Set(writable.map(t => t.channelId || ''))
+  if (channels.size > 1) {
+    ElMessage.warning('批量写入只能在同一个通道内，请分开勾选')
+    return
+  }
   emit('batch-write', writable)
 }
 </script>
@@ -313,6 +350,10 @@ function onBatch() {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+}
+
+.mono {
+  font-family: Consolas, monospace;
 }
 
 /* 二进制 64 位（79 字符）放不进一行时，只允许在 4 位组的空格处折行，

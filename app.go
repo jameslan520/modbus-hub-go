@@ -289,12 +289,17 @@ func (a *App) PickTagFile() (string, error) {
 	return strings.TrimSpace(path), nil
 }
 
-// ParseTagFile 解析点位 CSV，返回可导入的点位与失败行
-func (a *App) ParseTagFile(path string) (tagio.Preview, error) {
+// ParseTagFile 解析点位 CSV，返回可导入的点位与失败行。
+// addrFormat 指定地址列的书写形式：dec 十进制 / hex 十六进制 / plc PLC 地址。
+func (a *App) ParseTagFile(path, addrFormat string) (tagio.Preview, error) {
 	if strings.TrimSpace(path) == "" {
 		return tagio.Preview{}, errors.New("未选择文件")
 	}
-	p, err := tagio.ReadFile(path)
+	format, err := resolveAddressFormat(addrFormat)
+	if err != nil {
+		return tagio.Preview{}, err
+	}
+	p, err := tagio.ReadFileWith(path, format)
 	if err != nil {
 		return tagio.Preview{}, err
 	}
@@ -302,6 +307,29 @@ func (a *App) ParseTagFile(path string) (tagio.Preview, error) {
 		return p, errors.New("没有解析出可用点位，请查看下方错误列表")
 	}
 	return p, nil
+}
+
+// ParseAddressInput 解析用户输入的寄存器地址，供点参数对话框实时校验与预览。
+// 返回体里同时带 Dec / Hex / PLC 三种等价写法，界面一次调用就能全部显示。
+func (a *App) ParseAddressInput(addrFormat, text string) (modbus.AddressResult, error) {
+	format, err := resolveAddressFormat(addrFormat)
+	if err != nil {
+		return modbus.AddressResult{}, err
+	}
+	return modbus.ParseAddress(format, text), nil
+}
+
+func resolveAddressFormat(s string) (modbus.AddressFormat, error) {
+	switch modbus.AddressFormat(strings.ToLower(strings.TrimSpace(s))) {
+	case modbus.FormatDec:
+		return modbus.FormatDec, nil
+	case modbus.FormatHex:
+		return modbus.FormatHex, nil
+	case modbus.FormatPLC:
+		return modbus.FormatPLC, nil
+	default:
+		return "", fmt.Errorf("不支持的地址形式：%q", s)
+	}
 }
 
 // ImportTags 把预览里的点位合并进通道点表，返回合并后的总点数
@@ -335,24 +363,74 @@ func (a *App) ExportTagTemplate() (string, error) {
 	return path, nil
 }
 
-// ExportTagDefinitions 导出点位定义（不含实时值），导出的文件可以直接再导入
-func (a *App) ExportTagDefinitions(channelID string) (string, error) {
-	cfg, ok := a.hub.Find(channelID)
-	if !ok {
-		return "", errors.New("未找到通道")
+// ExportTagDefinitions 导出点位定义（不含实时值），导出的文件可以直接再导入。
+// 传多个通道时合并成一份，并加一列「通道」区分来源。
+func (a *App) ExportTagDefinitions(channelIDs []string) (string, error) {
+	groups, err := a.collectChannels(channelIDs)
+	if err != nil {
+		return "", err
 	}
-	if len(cfg.Tags) == 0 {
-		return "", errors.New("该通道没有点位可导出")
+	total := 0
+	for _, cfg := range groups {
+		total += len(cfg.Tags)
 	}
-	path, err := a.pickSavePath("导出点位定义", safeFileName(cfg.Name)+"-点位定义.csv")
+	if total == 0 {
+		return "", errors.New("没有点位可导出")
+	}
+	name := exportFileName(groups)
+	path, err := a.pickSavePath("导出点位定义", safeFileName(name)+"-点位定义.csv")
 	if err != nil || path == "" {
 		return path, err
 	}
-	if err := export.WriteCSV(path, tagio.Header(), tagio.Rows(cfg.Tags)); err != nil {
+
+	multi := len(groups) > 1
+	header := tagio.Header()
+	if multi {
+		header = append([]string{"通道"}, header...)
+	}
+	rows := make([][]string, 0, total)
+	for _, cfg := range groups {
+		for _, r := range tagio.Rows(cfg.Tags) {
+			if multi {
+				r = append([]string{cfg.Name}, r...)
+			}
+			rows = append(rows, r)
+		}
+	}
+	if err := export.WriteCSV(path, header, rows); err != nil {
 		return "", err
 	}
-	a.emitLog("Info", cfg.Name, fmt.Sprintf("已导出点位定义 %d 行：%s", len(cfg.Tags), path))
+	a.emitLog("Info", name, fmt.Sprintf("已导出点位定义 %d 行：%s", len(rows), path))
 	return path, nil
+}
+
+// collectChannels 按顺序取出待导出的通道，ID 重复时只算一次
+func (a *App) collectChannels(channelIDs []string) ([]models.ChannelConfig, error) {
+	seen := map[string]bool{}
+	groups := make([]models.ChannelConfig, 0, len(channelIDs))
+	for _, id := range channelIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		cfg, ok := a.hub.Find(id)
+		if !ok {
+			return nil, errors.New("未找到通道：" + id)
+		}
+		groups = append(groups, cfg)
+	}
+	if len(groups) == 0 {
+		return nil, errors.New("请先选择通道")
+	}
+	return groups, nil
+}
+
+func exportFileName(groups []models.ChannelConfig) string {
+	if len(groups) == 1 {
+		return groups[0].Name
+	}
+	return fmt.Sprintf("%s 等%d个通道", groups[0].Name, len(groups))
 }
 
 // ---------- 报警 ----------
@@ -472,8 +550,8 @@ func (a *App) ClearAllHistory() error {
 
 // PruneResult 清理结果
 type PruneResult struct {
-	Files int    `json:"files"` // 删除的分片数
-	Freed int64  `json:"freed"` // 释放的字节数
+	Files int   `json:"files"` // 删除的分片数
+	Freed int64 `json:"freed"` // 释放的字节数
 }
 
 // PruneHistory 立即按保留策略清理一次
@@ -575,50 +653,66 @@ func (a *App) ExportTrend(tagID, tagName string, windowSec int) (string, error) 
 	return path, nil
 }
 
-// ExportTags 导出某通道的点表与当前值
-func (a *App) ExportTags(channelID string) (string, error) {
-	cfg, ok := a.hub.Find(channelID)
-	if !ok {
-		return "", errors.New("未找到通道")
+// ExportTags 导出点表与当前值。可以一次传多个通道：合并成一份并加一列「通道」，
+// 正好对应界面上「同时监视多个通道」看到的内容。
+func (a *App) ExportTags(channelIDs []string) (string, error) {
+	groups, err := a.collectChannels(channelIDs)
+	if err != nil {
+		return "", err
 	}
-	values := make(map[string]models.TagValue)
-	for _, v := range a.hub.Values(channelID) {
-		values[v.TagID] = v
-	}
+	name := exportFileName(groups)
+	multi := len(groups) > 1
 
-	rows := make([][]string, 0, len(cfg.Tags))
-	for i, t := range cfg.Tags {
-		v := values[t.ID]
-		rows = append(rows, []string{
-			strconv.Itoa(i + 1),
-			t.Name,
-			strconv.FormatInt(int64(t.Address), 10),
-			t.DataType.String(),
-			fmt.Sprintf("0x%02X", t.FunctionCode),
-			unitOrDash(t.Unit),
-			strconv.FormatFloat(t.Scale, 'f', -1, 64),
-			strconv.FormatFloat(t.Offset, 'f', -1, 64),
-			strconv.Itoa(t.DecimalPlaces),
-			boolText(t.IsEnabled),
-			boolText(t.TrendEnabled),
-			displayOrDash(v),
-			dashIfEmpty(v.HexValue),
-			dashIfEmpty(modbus.RegistersToHex(v.Registers)),
-			v.Quality,
-			v.Timestamp,
-		})
-	}
-
-	path, err := a.pickSavePath("导出点表", safeFileName(cfg.Name)+"-点表.csv")
+	path, err := a.pickSavePath("导出点表", safeFileName(name)+"-点表.csv")
 	if err != nil || path == "" {
 		return path, err
 	}
+
+	rows := make([][]string, 0, 64)
+	for _, cfg := range groups {
+		values := make(map[string]models.TagValue)
+		for _, v := range a.hub.Values(cfg.ID) {
+			values[v.TagID] = v
+		}
+		for i, t := range cfg.Tags {
+			v := values[t.ID]
+			row := []string{
+				strconv.Itoa(i + 1),
+				t.Name,
+				strconv.FormatInt(int64(t.Address), 10),
+				t.DataType.String(),
+				fmt.Sprintf("0x%02X", t.FunctionCode),
+				unitOrDash(t.Unit),
+				strconv.FormatFloat(t.Scale, 'f', -1, 64),
+				strconv.FormatFloat(t.Offset, 'f', -1, 64),
+				strconv.Itoa(t.DecimalPlaces),
+				boolText(t.IsEnabled),
+				boolText(t.TrendEnabled),
+				displayOrDash(v),
+				dashIfEmpty(v.HexValue),
+				dashIfEmpty(modbus.RegistersToHex(v.Registers)),
+				v.Quality,
+				v.Timestamp,
+			}
+			if multi {
+				row = append([]string{cfg.Name}, row...)
+			}
+			rows = append(rows, row)
+		}
+	}
+	if len(rows) == 0 {
+		return "", errors.New("没有点位可导出")
+	}
+
 	header := []string{"序号", "点位名称", "地址", "数据类型", "功能码", "单位",
 		"倍率", "偏移", "小数位", "启用", "记录曲线", "实时值", "十六进制", "原始寄存器", "质量", "更新时间"}
+	if multi {
+		header = append([]string{"通道"}, header...)
+	}
 	if err := export.WriteCSV(path, header, rows); err != nil {
 		return "", err
 	}
-	a.emitLog("Info", cfg.Name, fmt.Sprintf("已导出点表 %d 行：%s", len(rows), path))
+	a.emitLog("Info", name, fmt.Sprintf("已导出点表 %d 行：%s", len(rows), path))
 	return path, nil
 }
 

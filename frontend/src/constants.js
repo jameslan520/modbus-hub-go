@@ -85,6 +85,32 @@ export function calibModeLabel(v) {
   return hit ? hit.label : String(v)
 }
 
+// 寄存器地址的三种书面写法。
+// 解析规则以 Go 端 modbus.ParseAddress 为准（那边有单测覆盖边界），
+// 这里只负责"按哪种形式显示"，两边必须一致：hex 为 0x+4 位大写，
+// plc 偏移 1~9999 用 5 位写法（40001），再大只能用 6 位（400001）。
+export const ADDRESS_FORMATS = [
+  {value: 'dec', label: '十进制', tip: '协议地址，0 起，范围 0~65535'},
+  {value: 'hex', label: '十六进制', tip: '可写 0x0064、0064 或 64h'},
+  {value: 'plc', label: 'PLC 地址', tip: '保持寄存器写作 40001（=协议地址 0），大地址用 400001'}
+]
+
+export function addressFormatTip(v) {
+  const hit = ADDRESS_FORMATS.find(f => f.value === v)
+  return hit ? hit.tip : ''
+}
+
+// 同一个地址的三种等价写法，用于点表悬浮提示与对话框预览
+export function addressTexts(addr) {
+  const n = Number.isFinite(Number(addr)) ? Number(addr) : 0
+  const v = Math.min(65535, Math.max(0, Math.trunc(n)))
+  return {
+    dec: String(v),
+    hex: '0x' + v.toString(16).toUpperCase().padStart(4, '0'),
+    plc: v <= 9998 ? String(40001 + v) : String(400001 + v)
+  }
+}
+
 // 报警方向：与 Go 端 models.AlarmKind 一致
 export const ALARM_KINDS = [
   {value: 'High', label: '超上限', type: 'danger'},

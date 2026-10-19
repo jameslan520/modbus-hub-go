@@ -11,9 +11,9 @@
         <el-dropdown size="small" trigger="click" @command="onExportCommand">
           <el-button size="small">导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
           <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="tags" :disabled="!currentChannel">当前通道点表</el-dropdown-item>
-              <el-dropdown-item command="tagdef" :disabled="!currentChannel">点位定义（可再导入）</el-dropdown-item>
+          <el-dropdown-menu>
+            <el-dropdown-item command="tags" :disabled="!watchedIds.length">当前点表</el-dropdown-item>
+            <el-dropdown-item command="tagdef" :disabled="!watchedIds.length">点位定义（可再导入）</el-dropdown-item>
               <el-dropdown-item command="alarms">报警记录</el-dropdown-item>
               <el-dropdown-item command="logs">运行日志</el-dropdown-item>
             </el-dropdown-menu>
@@ -31,7 +31,9 @@
         :channels="channels"
         :runtime="runtimeMap"
         :current-id="currentId"
+        :watched-ids="watchedIds"
         @select="onSelect"
+        @watch="onWatch"
         @add="onAddChannel"
         @edit="onEditChannel"
         @remove="onRemoveChannel"
@@ -41,8 +43,10 @@
 
       <div class="app-main">
         <TagTable
-          :channel="currentChannel"
-          :values="currentValues"
+          :rows="tagRows"
+          :primary="currentChannel"
+          :multi="multiWatch"
+          :values="mergedValues"
           @add="onAddTag"
           @edit="onEditTag"
           @remove="onRemoveTag"
@@ -92,7 +96,7 @@
       v-model:visible="tagDialog.visible"
       :tag="tagDialog.data"
       :is-new="tagDialog.isNew"
-      :channel="currentChannel"
+      :channel="dialogChannel"
       @submit="onTagSubmit"
     />
     <TagImportDialog
@@ -103,7 +107,7 @@
     <HistoryDialog
       v-model:visible="historyDialog.visible"
       :tag="historyDialog.tag"
-      :channel="currentChannel"
+      :tags="tagRows"
     />
     <BatchWriteDialog
       v-model:visible="batchDialog.visible"
@@ -113,9 +117,9 @@
     <TrendDialog
       v-model:visible="trendDialog.visible"
       :tag="trendDialog.tag"
-      :channel="currentChannel"
+      :tags="trendOptions"
       :compare-ids="compareIds"
-      :values="currentValues"
+      :values="mergedValues"
     />
     <CalibrationDialog
       v-model:visible="calibDialog.visible"
@@ -176,13 +180,60 @@ const logs = ref([])
 const activeAlarms = ref([])
 const alarmHistory = ref([])
 const bottomTab = ref('log')
+// watchedIds 当前正在监视的通道（点表里同时显示它们的点）。
+// currentId 仍是"主通道"，新增点 / 导入 / 导出 / 标定这类只能针对单个通道的操作以它为准。
+const watchedIds = ref([])
 const compareIds = ref([])
 const currentId = ref('')
 const clock = ref('')
 
 const currentChannel = computed(() => channels.value.find(c => c.id === currentId.value) || null)
-const currentValues = computed(() => valuesMap.value[currentId.value] || {})
 const currentRunning = computed(() => runtimeMap.value[currentId.value]?.state === 'Connected')
+// 点参数对话框里的联动写入候选项，要取自点位所属通道
+const dialogChannel = computed(() => channelOf(tagDialog.value.channelId) || currentChannel.value)
+
+// 按通道列表的原始顺序取，避免勾选顺序影响点表行的排列
+const watchedChannels = computed(() => channels.value.filter(c => watchedIds.value.includes(c.id)))
+const multiWatch = computed(() => watchedChannels.value.length > 1)
+
+// 合并后的点表行。带上所属通道，后续编辑/删除/写入才能路由回去。
+// 上面两个字段只存在于这份视图行里，是给界面认通道用的，不能写回配置
+const tagRows = computed(() => {
+  const out = []
+  for (const c of watchedChannels.value) {
+    for (const t of c.tags || []) {
+      out.push({...t, channelId: c.id, channelName: c.name})
+    }
+  }
+  return out
+})
+
+// 多通道的值是一份 map per channel，这里摊平成 tagId -> value
+const mergedValues = computed(() => {
+  const out = {}
+  for (const id of watchedIds.value) {
+    Object.assign(out, valuesMap.value[id] || {})
+  }
+  return out
+})
+
+// 标定只针对主通道，单独取它自己的值，不要把别的通道混进来
+const currentValues = computed(() => valuesMap.value[currentId.value] || {})
+
+// 曲线对比的候选项：跨通道也要能选，所以不看单个 channel
+const trendOptions = computed(() => tagRows.value.filter(t => t.trendEnabled))
+
+// 把视图行还原成纯点位：channelId / channelName 是界面附加上去的
+function stripRow(row) {
+  const t = JSON.parse(JSON.stringify(row))
+  delete t.channelId
+  delete t.channelName
+  return t
+}
+
+function channelOf(id) {
+  return channels.value.find(c => c.id === id) || null
+}
 
 const channelDialog = ref({visible: false, isNew: false, data: null})
 const tagDialog = ref({visible: false, isNew: false, data: null})
@@ -235,6 +286,15 @@ async function loadAll() {
   if (!currentId.value && channels.value.length > 0) {
     currentId.value = channels.value[0].id
   }
+  if (!watchedIds.value.length && currentId.value) {
+    watchedIds.value = [currentId.value]
+  }
+  // 配置被外部改动过（比如删了通道）时监视集合要跟着收敛
+  const alive = channels.value.map(c => c.id)
+  watchedIds.value = watchedIds.value.filter(id => alive.includes(id))
+  if (!watchedIds.value.length && currentId.value) {
+    watchedIds.value = [currentId.value]
+  }
 }
 
 async function persist() {
@@ -242,9 +302,26 @@ async function persist() {
   await refreshRuntime()
 }
 
+// 点通道行 = 只监视它（保持原来的单选习惯）
 function onSelect(id) {
   currentId.value = id
+  watchedIds.value = [id]
   refreshValues(id)
+}
+
+// 勾复选框 = 把通道并入/移出监视集合。至少留一个，全空了就把主通道放回来。
+function onWatch(id, on) {
+  if (on) {
+    if (!watchedIds.value.includes(id)) watchedIds.value = [...watchedIds.value, id]
+    refreshValues(id)
+    return
+  }
+  const next = watchedIds.value.filter(x => x !== id)
+  watchedIds.value = next.length ? next : [id]
+  // 主通道被移出监视集合时，改指到第一个还在监视的，避免按钮作用在一个没显示的通道上
+  if (!watchedIds.value.includes(currentId.value)) {
+    currentId.value = watchedIds.value[0] || ''
+  }
 }
 
 async function onStart(id) {
@@ -295,8 +372,12 @@ function onEditChannel(channel) {
 
 async function onRemoveChannel(channel) {
   channels.value = channels.value.filter(c => c.id !== channel.id)
+  watchedIds.value = watchedIds.value.filter(id => id !== channel.id)
   if (currentId.value === channel.id) {
     currentId.value = channels.value.length ? channels.value[0].id : ''
+  }
+  if (!watchedIds.value.length && currentId.value) {
+    watchedIds.value = [currentId.value]
   }
   await persist()
 }
@@ -317,44 +398,54 @@ async function onAddTag() {
   if (!ch) return
   const tag = await NewTag('Tag' + (ch.tags.length + 1))
   tag.slaveId = ch.slaveId
-  tagDialog.value = {visible: true, isNew: true, data: tag}
+  tagDialog.value = {visible: true, isNew: true, data: tag, channelId: ch.id}
 }
 
-function onEditTag(tag) {
-  tagDialog.value = {visible: true, isNew: false, data: JSON.parse(JSON.stringify(tag))}
+// 编辑多点位弹出时用该点位所属通道：联动写入的候选项必须是同一通道里的可写点
+function onEditTag(row) {
+  tagDialog.value = {
+    visible: true,
+    isNew: false,
+    data: stripRow(row),
+    channelId: row.channelId || currentId.value
+  }
 }
 
-async function onRemoveTag(tag) {
-  const ch = currentChannel.value
+async function onRemoveTag(row) {
+  const ch = channelOf(row.channelId) || currentChannel.value
   if (!ch) return
-  ch.tags = ch.tags.filter(t => t.id !== tag.id)
+  ch.tags = ch.tags.filter(t => t.id !== row.id)
   await persist()
   await refreshAlarms()
   // 顺手清掉这个点已落盘的历史，避免删掉的点继续占空间
   try {
-    await ClearHistory(tag.id)
+    await ClearHistory(row.id)
   } catch (e) {
     // 历史库未启用或文件不存在，忽略
   }
 }
 
 async function onTagSubmit(tag) {
-  const ch = currentChannel.value
+  const ch = channelOf(tagDialog.value.channelId) || currentChannel.value
   if (!ch) return
+  // 兜底：视图行上的附加字段绝不能进配置
+  const clean = stripRow(tag)
+  clean.alarmActionTag = clean.alarmActionTag || ''
   if (tagDialog.value.isNew) {
-    ch.tags = [...ch.tags, tag]
+    ch.tags = [...ch.tags, clean]
   } else {
-    ch.tags = ch.tags.map(t => (t.id === tag.id ? tag : t))
+    ch.tags = ch.tags.map(t => (t.id === clean.id ? clean : t))
   }
   await persist()
   await refreshValues(ch.id)
 }
 
-async function onWriteTag(tag, value) {
+async function onWriteTag(row, value) {
+  const channelID = row.channelId || currentId.value
   try {
-    await WriteTag(currentId.value, tag.id, value)
+    await WriteTag(channelID, row.id, value)
     ElMessage.success('写入成功')
-    await refreshValues(currentId.value)
+    await refreshValues(channelID)
   } catch (e) {
     ElMessage.error(String(e))
   }
@@ -365,13 +456,20 @@ function onBatchWrite(tags) {
 }
 
 async function onBatchSubmit(items) {
-  try {
-    await WriteTags(currentId.value, items)
-    ElMessage.success('批量写入成功')
-    await refreshValues(currentId.value)
-  } catch (e) {
-    ElMessage.error(String(e))
+  // 同一次请求不能跨通道，按所属通道拆开各写一次
+  const groups = {}
+  for (const it of items) {
+    const cid = it.channelId || currentId.value
+    if (!groups[cid]) groups[cid] = []
+    groups[cid].push({tagId: it.tagId, value: it.value})
   }
+  let n = 0
+  for (const cid of Object.keys(groups)) {
+    await WriteTags(cid, groups[cid])
+    n += groups[cid].length
+    await refreshValues(cid)
+  }
+  ElMessage.success(`批量写入成功，共 ${n} 个点`)
 }
 
 function onTrend(tag) {
@@ -400,13 +498,15 @@ function onImportTags() {
 async function onImported() {
   channels.value = await GetChannels()
   await persist()
-  await refreshValues(currentId.value)
+  for (const id of watchedIds.value) {
+    await refreshValues(id)
+  }
 }
 
 async function onExportDef() {
-  if (!currentId.value) return
+  if (!watchedIds.value.length) return
   try {
-    const path = await ExportTagDefinitions(currentId.value)
+    const path = await ExportTagDefinitions(watchedIds.value)
     if (path) ElMessage.success(`已导出：${path}`)
   } catch (e) {
     ElMessage.error(String(e))
@@ -457,9 +557,9 @@ async function onExportCommand(cmd) {
     return
   }
   if (cmd === 'tags') {
-    if (!currentId.value) return
+    if (!watchedIds.value.length) return
     try {
-      const path = await ExportTags(currentId.value)
+      const path = await ExportTags(watchedIds.value)
       if (path) ElMessage.success(`已导出：${path}`)
     } catch (e) {
       ElMessage.error(String(e))

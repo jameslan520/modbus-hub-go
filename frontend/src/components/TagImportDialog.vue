@@ -11,9 +11,11 @@
       <el-button size="small" type="primary" @click="onPick">选择 CSV 文件</el-button>
       <el-button size="small" @click="onTemplate">下载模板</el-button>
       <span class="import-path">{{ preview.path || '未选择文件' }}</span>
-      <span class="import-hint">
-        支持 UTF-8 / GBK 编码，逗号或分号分隔；按表头识别列，缺列也能读
-      </span>
+      <span class="addr-label">地址形式</span>
+      <el-select v-model="addrFormat" size="small" class="addr-sel" @change="onFormatChange">
+        <el-option v-for="f in ADDRESS_FORMATS" :key="f.value" :label="f.label" :value="f.value" />
+      </el-select>
+      <span class="import-hint">{{ addrTip }}</span>
     </div>
 
     <el-alert
@@ -112,7 +114,7 @@
 <script setup>
 import {computed, ref} from 'vue'
 import {ElMessage} from 'element-plus'
-import {dataTypeLabel, functionCodeLabel} from '../constants'
+import {dataTypeLabel, functionCodeLabel, ADDRESS_FORMATS, addressFormatTip} from '../constants'
 import {
   ExportTagTemplate,
   ImportTags,
@@ -128,6 +130,9 @@ const emit = defineEmits(['update:visible', 'imported'])
 
 const preview = ref({path: '', tags: [], errors: []})
 const mode = ref(1)
+// 地址列的书写形式。整份文件统一用一种：混合的话 40001 无法判断是十进制还是 PLC 写法。
+const addrFormat = ref('dec')
+const addrTip = computed(() => addressFormatTip(addrFormat.value))
 
 const MODES = [
   {value: 0, label: '追加', tip: '直接加到点表末尾，同名的会重复出现'},
@@ -144,17 +149,32 @@ async function onPick() {
   try {
     const path = await PickTagFile()
     if (!path) return // 用户取消
-    const p = await ParseTagFile(path)
-    preview.value = {
-      path: p.path || path,
-      tags: p.tags || [],
-      errors: p.errors || []
-    }
-    if (!preview.value.tags.length) {
-      ElMessage.warning('没有解析出可导入的点位')
-    }
+    await parseFile(path)
   } catch (e) {
     ElMessage.error(String(e))
+  }
+}
+
+// 换个形式等于换一种读法，已经选好的文件要按新形式重新解析一遍
+async function onFormatChange() {
+  const path = preview.value.path
+  if (!path) return
+  try {
+    await parseFile(path)
+  } catch (e) {
+    ElMessage.error(String(e))
+  }
+}
+
+async function parseFile(path) {
+  const p = await ParseTagFile(path, addrFormat.value)
+  preview.value = {
+    path: p.path || path,
+    tags: p.tags || [],
+    errors: p.errors || []
+  }
+  if (!preview.value.tags.length) {
+    ElMessage.warning('没有解析出可导入的点位')
   }
 }
 
@@ -206,6 +226,15 @@ async function onConfirm() {
   margin-left: auto;
   font-size: 12px;
   color: #909399;
+}
+
+.addr-label {
+  font-size: 12px;
+  color: #606266;
+}
+
+.addr-sel {
+  width: 104px;
 }
 
 .import-alert {

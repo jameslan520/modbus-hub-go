@@ -97,8 +97,8 @@ echarts.use([
 const props = defineProps({
   visible: {type: Boolean, default: false},
   tag: {type: Object, default: null},
-  // 点表传进来才能选多个点位做对比
-  channel: {type: Object, default: null},
+  // 可对比的点位候选：多通道监视时传合并后的行，才能跨通道挑点对比
+  tags: {type: Array, default: () => []},
   // 点表勾选后点"对比曲线"传进来的初始选中项
   compareIds: {type: Array, default: () => []},
   values: {type: Object, default: () => ({})}
@@ -119,10 +119,11 @@ let timer = 0
 let resizeObserver = null
 
 const options = computed(() => {
-  const list = props.channel && props.channel.tags ? props.channel.tags : []
+  const list = props.tags || []
   const trend = list.filter(t => t.trendEnabled)
   if (!trend.length && props.tag) return [props.tag]
-  return trend
+  // 一个都没开曲线记录时退回全部候选，至少让界面有东西可选
+  return trend.length ? trend : list
 })
 
 const selectedTags = computed(() => options.value.filter(t => selected.value.includes(t.id)))
