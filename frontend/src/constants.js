@@ -13,6 +13,38 @@ export const FUNCTION_CODES = [
   {value: 16, label: '16 写多个寄存器'}
 ]
 
+// 多寄存器数值的字节顺序。命名沿用现场习惯：数值最高字节记作 A，依次往下 B、C、D（32 位）/ … H（64 位）。
+// Modbus 报文本身是大端（寄存器内高字节在前），"字序"说的是这些字节在报文里怎么排。
+// 零值 CDAB 与旧版一致，旧配置读进来行为不变。
+export const BYTE_ORDERS = [
+  {value: 0, label: 'CDAB 低字在前', regs32: '[CD][AB]', regs64: 'GH EF CD AB',
+   tip: '默认。32 位先发低字，64 位从最低字开始发'},
+  {value: 1, label: 'ABCD 高字在前', regs32: '[AB][CD]', regs64: 'AB CD EF GH',
+   tip: '大端直排，先发高字'},
+  {value: 2, label: 'BADC 字内字节交换', regs32: '[BA][DC]', regs64: 'BA DC FE HG',
+   tip: '每个寄存器内两字节对调，寄存器之间顺序不变'},
+  {value: 3, label: 'DCBA 全反序', regs32: '[DC][BA]', regs64: 'HG FE DC BA',
+   tip: '字节完全倒序（小端）'}
+]
+
+// 只有占多个寄存器的类型才有字序可言；UInt16 只有一个寄存器，界面上不显示
+const BYTE_ORDER_TYPES = new Set([1, 2, 3]) // Float32 / Double64 / Int32
+
+export function byteOrderApplies(dataType) {
+  return BYTE_ORDER_TYPES.has(Number(dataType))
+}
+
+export function byteOrderLabel(v) {
+  const hit = BYTE_ORDERS.find(d => d.value === v)
+  return hit ? hit.label : 'CDAB'
+}
+
+// 下拉与悬浮提示用的一句话说明
+export function byteOrderTip(v) {
+  const hit = BYTE_ORDERS.find(d => d.value === v)
+  return hit ? hit.tip : ''
+}
+
 export const PARITY_OPTIONS = [
   {value: 0, label: '无校验 (None)'},
   {value: 1, label: '奇校验 (Odd)'},

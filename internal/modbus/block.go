@@ -154,7 +154,7 @@ func EncodeBlock(items []WriteItem) ([]uint16, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s：%v", it.Tag.Name, err)
 		}
-		regs = append(regs, EncodeRegisters(v, it.Tag.DataType)...)
+		regs = append(regs, EncodeRegisters(v, it.Tag)...)
 	}
 	return regs, nil
 }

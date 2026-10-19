@@ -61,6 +61,69 @@ const (
 	CalibrationSlopeIntercept CalibrationWriteMode = 1
 )
 
+// ByteOrder 多寄存器数值的字节顺序。
+//
+// 命名沿用现场习惯：把一个数值的最高字节记作 A，依次往低记作 B、C、D（32 位）/ … H（64 位）。
+// Modbus 报文本身是大端（寄存器内高字节在前），所以"字序"说的是**寄存器之间以及寄存器
+// 内部字节**怎么排。四种规则对 32 位与 64 位用同一套字节置换定义，见 modbus/applyByteOrder。
+//
+// 零值必须是 CDAB：旧版 channels.json 没有这个字段，反序列化后就是 0，
+// 行为要与旧版（Float32/Int32 = CDAB、Double64 = GHEF CDAB）完全一致。
+type ByteOrder int
+
+const (
+	// ByteOrderCDAB 低字在前（默认值，与旧版一致）。32 位：[CD][AB]；64 位：GH EF CD AB
+	ByteOrderCDAB ByteOrder = iota
+	// ByteOrderABCD 高字在前（大端直排）。32 位：[AB][CD]；64 位：AB CD EF GH
+	ByteOrderABCD
+	// ByteOrderBADC 字内字节交换、字序不变。32 位：[BA][DC]；64 位：BA DC FE HG
+	ByteOrderBADC
+	// ByteOrderDCBA 全反序（小端）。32 位：[DC][BA]；64 位：HG FE DC BA
+	ByteOrderDCBA
+)
+
+var byteOrderNames = map[ByteOrder]string{
+	ByteOrderCDAB: "CDAB",
+	ByteOrderABCD: "ABCD",
+	ByteOrderBADC: "BADC",
+	ByteOrderDCBA: "DCBA",
+}
+
+// byteOrderLabels 是界面下拉与提示用的中文说明
+var byteOrderLabels = map[ByteOrder]string{
+	ByteOrderCDAB: "CDAB 低字在前",
+	ByteOrderABCD: "ABCD 高字在前",
+	ByteOrderBADC: "BADC 字内字节交换",
+	ByteOrderDCBA: "DCBA 全反序",
+}
+
+func (o ByteOrder) String() string {
+	if n, ok := byteOrderNames[o]; ok {
+		return n
+	}
+	return byteOrderNames[ByteOrderCDAB]
+}
+
+// Label 带中文说明的名称，界面下拉直接显示
+func (o ByteOrder) Label() string {
+	if n, ok := byteOrderLabels[o]; ok {
+		return n
+	}
+	return byteOrderLabels[ByteOrderCDAB]
+}
+
+func (o ByteOrder) IsValid() bool {
+	_, ok := byteOrderNames[o]
+	return ok
+}
+
+// Applies 判断该数据类型是否受字节顺序影响。
+// UInt16 只占一个寄存器，理论上也有字节交换（BADC/DCBA 对它等价），
+// 但现场绝大多数设备就是 ABCD，列出来徒增困惑，界面上不显示。
+func (o ByteOrder) Applies(dt TagDataType) bool {
+	return dt == Float32 || dt == Int32 || dt == Double64
+}
+
 // ChannelState 通道运行状态
 type ChannelState string
 
@@ -73,18 +136,20 @@ const (
 
 // TagPoint SCADA 数据点。采集一律用 03；06/16 表示可写。
 type TagPoint struct {
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	SlaveID       byte        `json:"slaveId"`
-	FunctionCode  byte        `json:"functionCode"`
-	Address       uint16      `json:"address"`
-	DataType      TagDataType `json:"dataType"`
-	Unit          string      `json:"unit"`
-	Scale         float64     `json:"scale"`
-	Offset        float64     `json:"offset"`
-	DecimalPlaces int         `json:"decimalPlaces"`
-	TrendEnabled  bool        `json:"trendEnabled"`
-	IsEnabled     bool        `json:"isEnabled"`
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	SlaveID      byte        `json:"slaveId"`
+	FunctionCode byte        `json:"functionCode"`
+	Address      uint16      `json:"address"`
+	DataType     TagDataType `json:"dataType"`
+	// 多寄存器数值的字节顺序；零值 CDAB 与旧版一致，改它不会触发串口重连
+	ByteOrder     ByteOrder `json:"byteOrder"`
+	Unit          string    `json:"unit"`
+	Scale         float64   `json:"scale"`
+	Offset        float64   `json:"offset"`
+	DecimalPlaces int       `json:"decimalPlaces"`
+	TrendEnabled  bool      `json:"trendEnabled"`
+	IsEnabled     bool      `json:"isEnabled"`
 
 	// 报警：上下限用指针区分"没配"（null）和"配成 0"，0 是合法阈值。
 	// Deadband 是回差，回落到 (限值 ∓ 回差) 以内才算恢复，避免临界值反复报警。
@@ -160,6 +225,9 @@ func (t *TagPoint) Sanitize(slaveID byte) {
 	if !t.DataType.IsValid() {
 		t.DataType = Float32
 	}
+	if !t.ByteOrder.IsValid() {
+		t.ByteOrder = ByteOrderCDAB
+	}
 	if !t.AlarmConfigured() {
 		t.AlarmEnabled = false
 	}
@@ -205,6 +273,8 @@ type ChannelConfig struct {
 	CalibrationSampleCount  int                  `json:"calibrationSampleCount"`
 	CalibrationStartAddress uint16               `json:"calibrationStartAddress"`
 	CalibrationDataType     TagDataType          `json:"calibrationDataType"`
+	// CalibrationByteOrder 标定下载的字节顺序，零值 CDAB 与旧版一致
+	CalibrationByteOrder    ByteOrder            `json:"calibrationByteOrder"`
 	CalibrationWriteMode    CalibrationWriteMode `json:"calibrationWriteMode"`
 	CalibrationPoints       []CalibrationPoint   `json:"calibrationPoints"`
 }
@@ -235,6 +305,9 @@ func (c *ChannelConfig) Sanitize() {
 	}
 	if !c.CalibrationDataType.IsValid() {
 		c.CalibrationDataType = Float32
+	}
+	if !c.CalibrationByteOrder.IsValid() {
+		c.CalibrationByteOrder = ByteOrderCDAB
 	}
 	if c.CalibrationWriteMode != CalibrationTable && c.CalibrationWriteMode != CalibrationSlopeIntercept {
 		c.CalibrationWriteMode = CalibrationTable
@@ -307,6 +380,7 @@ func NewTagPoint(name string) TagPoint {
 		SlaveID:       1,
 		FunctionCode:  FCReadHoldingRegisters,
 		DataType:      Float32,
+		ByteOrder:     ByteOrderCDAB,
 		Scale:         1,
 		DecimalPlaces: 2,
 		TrendEnabled:  true,

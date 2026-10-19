@@ -35,26 +35,28 @@ type RowError struct {
 
 // Preview 解析结果：成功的点 + 失败的行
 type Preview struct {
-	Path   string             `json:"path"`
-	Header []string           `json:"header"`
-	Total  int                `json:"total"`
-	Tags   []models.TagPoint  `json:"tags"`
-	Errors []RowError         `json:"errors"`
+	Path   string            `json:"path"`
+	Header []string          `json:"header"`
+	Total  int               `json:"total"`
+	Tags   []models.TagPoint `json:"tags"`
+	Errors []RowError        `json:"errors"`
 }
 
-// Header 导出的列顺序，同时也是无表头文件的解析顺序
+// Header 导出的列顺序，同时也是无表头文件的解析顺序。
+// 「字节顺序」刻意放在最后：早期版本导出的文件只有前 12 列，
+// 追加在末尾能保证旧文件按固定列序解析时不受影响（缺列回落成默认 CDAB）。
 func Header() []string {
 	return []string{
 		"序号", "名称", "从机号", "功能码", "地址", "数据类型",
-		"单位", "倍率", "偏移", "小数位", "启用", "记录曲线",
+		"单位", "倍率", "偏移", "小数位", "启用", "记录曲线", "字节顺序",
 	}
 }
 
 // TemplateRows 模板里的两行示例，导入时会被当成真实数据读进来
 func TemplateRows() [][]string {
 	return [][]string{
-		{"1", "温度", "1", "03", "0", "Float32", "°C", "1", "0", "1", "是", "是"},
-		{"2", "设定值", "1", "16", "2", "Float32", "°C", "1", "0", "1", "是", "是"},
+		{"1", "温度", "1", "03", "0", "Float32", "°C", "1", "0", "1", "是", "是", "CDAB"},
+		{"2", "设定值", "1", "16", "2", "Float32", "°C", "1", "0", "1", "是", "是", "CDAB"},
 	}
 }
 
@@ -75,6 +77,7 @@ func Rows(tags []models.TagPoint) [][]string {
 			strconv.Itoa(t.DecimalPlaces),
 			boolText(t.IsEnabled),
 			boolText(t.TrendEnabled),
+			t.ByteOrder.String(),
 		})
 	}
 	return rows
@@ -151,7 +154,7 @@ func ParseWith(text, path string, format modbus.AddressFormat) (Preview, error) 
 	// 表头：出现"名称"或 name 就认为第一行是表头
 	start := 0
 	col := defaultColumns()
-		if looksLikeHeader(records[0]) {
+	if looksLikeHeader(records[0]) {
 		start = 1
 		p.Header = records[0]
 		col, err = mapColumns(records[0], format)
@@ -190,13 +193,14 @@ type columns struct {
 	decs    int
 	enabled int
 	trend   int
+	border  int
 	// addrFormat 地址列的书写形式（十进制 / 十六进制 / PLC 地址）
 	addrFormat modbus.AddressFormat
 }
 
 func defaultColumns() columns {
 	return columns{name: 1, slave: 2, fc: 3, address: 4, dtype: 5,
-		unit: 6, scale: 7, offset: 8, decs: 9, enabled: 10, trend: 11,
+		unit: 6, scale: 7, offset: 8, decs: 9, enabled: 10, trend: 11, border: 12,
 		addrFormat: modbus.FormatDec}
 }
 
@@ -212,6 +216,7 @@ var headerAliases = map[string][]string{
 	"decs":    {"小数位", "小数", "decimalplaces", "decimals", "precision"},
 	"enabled": {"启用", "启用采集", "enabled", "enable", "active"},
 	"trend":   {"记录曲线", "曲线", "trend", "trendenabled", "history"},
+	"border":  {"字节顺序", "字节序", "字序", "byteorder", "endian", "wordorder"},
 }
 
 func norm(s string) string {
@@ -231,7 +236,7 @@ func looksLikeHeader(row []string) bool {
 
 func mapColumns(row []string, format modbus.AddressFormat) (columns, error) {
 	c := columns{name: -1, slave: -1, fc: -1, address: -1, dtype: -1,
-		unit: -1, scale: -1, offset: -1, decs: -1, enabled: -1, trend: -1,
+		unit: -1, scale: -1, offset: -1, decs: -1, enabled: -1, trend: -1, border: -1,
 		addrFormat: format}
 	hit := map[string]int{}
 	for idx, cell := range row {
@@ -265,6 +270,7 @@ func mapColumns(row []string, format modbus.AddressFormat) (columns, error) {
 	assign("decs", &c.decs)
 	assign("enabled", &c.enabled)
 	assign("trend", &c.trend)
+	assign("border", &c.border)
 
 	if c.name < 0 || c.address < 0 {
 		return c, errors.New("表头缺少必需列：名称、地址")
@@ -331,6 +337,18 @@ func parseRow(row []string, c columns, line int) (models.TagPoint, RowError) {
 		dt = v
 	}
 	tag.DataType = dt
+
+	// 字节顺序只对多寄存器类型（Float32/Int32/Double64）生效，UInt16 写了也忽略
+	order := models.ByteOrderCDAB
+	if s := cell(row, c.border); s != "" {
+		v, ok := parseByteOrder(s)
+		if !ok {
+			return fail("字节顺序无效：" + s + "（可选 CDAB / ABCD / BADC / DCBA）")
+		}
+		order = v
+	}
+	tag.ByteOrder = order
+
 	tag.Unit = cell(row, c.unit)
 
 	tag.Scale = 1
@@ -481,6 +499,21 @@ func parseDataType(s string) (models.TagDataType, bool) {
 		return models.Double64, true
 	case "int32", "i32", "long", "3":
 		return models.Int32, true
+	}
+	return 0, false
+}
+
+// parseByteOrder 字节顺序：接受 CDAB/ABCD/BADC/DCBA，也认常见的中文与英文别名
+func parseByteOrder(s string) (models.ByteOrder, bool) {
+	switch norm(s) {
+	case "cdab", "低字在前", "字交换", "littleword", "0":
+		return models.ByteOrderCDAB, true
+	case "abcd", "高字在前", "大端", "big", "bigendian", "1":
+		return models.ByteOrderABCD, true
+	case "badc", "字节交换", "byteswap", "2":
+		return models.ByteOrderBADC, true
+	case "dcba", "全反序", "小端", "little", "littleendian", "3":
+		return models.ByteOrderDCBA, true
 	}
 	return 0, false
 }

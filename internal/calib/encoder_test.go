@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"modbus-hub-go/internal/modbus"
 	"modbus-hub-go/internal/models"
 )
 
@@ -95,7 +96,7 @@ func TestEncodeTableLayout(t *testing.T) {
 		{Measured: 1.5, Standard: 10},
 		{Measured: 2.5, Standard: 20},
 	}
-	regs := EncodeTable(pts, models.Float32)
+	regs := EncodeTable(pts, models.Float32, models.ByteOrderCDAB)
 	if len(regs) != 8 {
 		t.Fatalf("2 点 × 2 值 × 2 寄存器 = 8，实际 %d", len(regs))
 	}
@@ -110,7 +111,7 @@ func TestEncodeTableLayout(t *testing.T) {
 }
 
 func TestEncodeSlopeInterceptLayout(t *testing.T) {
-	regs := EncodeSlopeIntercept(1, 0, models.Float32)
+	regs := EncodeSlopeIntercept(1, 0, models.Float32, models.ByteOrderCDAB)
 	if len(regs) != 4 {
 		t.Fatalf("k、b 各 2 寄存器共 4 个，实际 %d", len(regs))
 	}
@@ -129,7 +130,7 @@ func TestBuildDownload(t *testing.T) {
 		{Measured: 2, Standard: 5},
 	}
 
-	regs, summary, err := BuildDownload(models.CalibrationTable, models.Float32, 100, pts)
+	regs, summary, err := BuildDownload(models.CalibrationTable, models.Float32, models.ByteOrderCDAB, 100, pts)
 	if err != nil {
 		t.Fatalf("标定表编码失败: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestBuildDownload(t *testing.T) {
 		t.Fatal("应返回说明文本")
 	}
 
-	regs, _, err = BuildDownload(models.CalibrationSlopeIntercept, models.Float32, 0, pts)
+	regs, _, err = BuildDownload(models.CalibrationSlopeIntercept, models.Float32, models.ByteOrderCDAB, 0, pts)
 	if err != nil {
 		t.Fatalf("斜率截距编码失败: %v", err)
 	}
@@ -149,15 +150,15 @@ func TestBuildDownload(t *testing.T) {
 	}
 
 	// 斜率截距但点数不足
-	if _, _, err := BuildDownload(models.CalibrationSlopeIntercept, models.Float32, 0, pts[:1]); err == nil {
+	if _, _, err := BuildDownload(models.CalibrationSlopeIntercept, models.Float32, models.ByteOrderCDAB, 0, pts[:1]); err == nil {
 		t.Fatal("点数不足应报错")
 	}
 	// 标定表但无点
-	if _, _, err := BuildDownload(models.CalibrationTable, models.Float32, 0, nil); err == nil {
+	if _, _, err := BuildDownload(models.CalibrationTable, models.Float32, models.ByteOrderCDAB, 0, nil); err == nil {
 		t.Fatal("无标定点应报错")
 	}
 	// 超出地址上限
-	if _, _, err := BuildDownload(models.CalibrationTable, models.Float32, 65530, pts); err == nil {
+	if _, _, err := BuildDownload(models.CalibrationTable, models.Float32, models.ByteOrderCDAB, 65530, pts); err == nil {
 		t.Fatal("超出地址上限应报错")
 	}
 }
@@ -174,6 +175,33 @@ func TestFormat(t *testing.T) {
 	for in, want := range cases {
 		if got := Format(in); got != want {
 			t.Fatalf("Format(%v) 期望 %q，实际 %q", in, want, got)
+		}
+	}
+}
+
+// 标定下载同样要按选定的字序编码：默认是 CDAB，选了 ABCD 就得高字在前
+func TestEncodeTableHonoursByteOrder(t *testing.T) {
+	pts := []models.CalibrationPoint{{Measured: 1.5, Standard: 10}}
+	// 1.5f -> 0x3FC00000
+	if regs := EncodeTable(pts, models.Float32, models.ByteOrderCDAB); regs[0] != 0x0000 || regs[1] != 0x3FC0 {
+		t.Fatalf("CDAB 1.5 编码错误: %04X %04X", regs[0], regs[1])
+	}
+	if regs := EncodeTable(pts, models.Float32, models.ByteOrderABCD); regs[0] != 0x3FC0 || regs[1] != 0x0000 {
+		t.Fatalf("ABCD 1.5 编码错误: %04X %04X", regs[0], regs[1])
+	}
+	if regs := EncodeSlopeIntercept(1, 0, models.Float32, models.ByteOrderABCD); regs[0] != 0x3F80 || regs[1] != 0x0000 {
+		t.Fatalf("ABCD 1.0 编码错误: %04X %04X", regs[0], regs[1])
+	}
+	// 四种字序都要能解回原值，否则下载下去的标定参数是错的
+	for _, order := range []models.ByteOrder{
+		models.ByteOrderCDAB, models.ByteOrderABCD, models.ByteOrderBADC, models.ByteOrderDCBA} {
+		regs := EncodeTable(pts, models.Float32, order)
+		tpl := models.TagPoint{DataType: models.Float32, ByteOrder: order}
+		if got := modbus.ParseRegisters(regs[:2], tpl).(float32); got != 1.5 {
+			t.Fatalf("%s 标定表解回失败：%v", order, got)
+		}
+		if got := modbus.ParseRegisters(regs[2:], tpl).(float32); got != 10 {
+			t.Fatalf("%s 标定表解回失败：%v", order, got)
 		}
 	}
 }

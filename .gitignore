@@ -5,6 +5,9 @@ frontend/dist
 frontend/package.json.md5
 node_modules
 
+# 出包脚本生成的临时文件（zip、release notes）
+dist/
+
 # 运行期生成（exe 同目录）
 channels.json
 settings.json

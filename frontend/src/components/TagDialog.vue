@@ -45,6 +45,12 @@
           <el-option v-for="d in DATA_TYPES" :key="d.value" :label="d.label" :value="d.value" />
         </el-select>
       </el-form-item>
+      <el-form-item v-if="orderVisible" label="字节顺序">
+        <el-select v-model="form.byteOrder" class="order-select">
+          <el-option v-for="o in BYTE_ORDERS" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+        <div class="addr-hint">{{ orderHint }}</div>
+      </el-form-item>
       <el-form-item label="单位">
         <el-input v-model="form.unit" placeholder="如 °C、MPa" />
       </el-form-item>
@@ -110,7 +116,16 @@
 <script setup>
 import {computed, ref, watch} from 'vue'
 import {ElMessage} from 'element-plus'
-import {ADDRESS_FORMATS, DATA_TYPES, FUNCTION_CODES, addressFormatTip, addressTexts} from '../constants'
+import {
+  ADDRESS_FORMATS,
+  BYTE_ORDERS,
+  DATA_TYPES,
+  FUNCTION_CODES,
+  addressFormatTip,
+  addressTexts,
+  byteOrderApplies,
+  byteOrderTip
+} from '../constants'
 import {ParseAddressInput} from '../../wailsjs/go/main/App'
 
 const props = defineProps({
@@ -139,6 +154,17 @@ const writableTags = computed(() => {
   )
 })
 
+// UInt16 只有一个寄存器，没有字序问题，把这一行藏掉免得看着像漏配
+const orderVisible = computed(() => !!form.value && byteOrderApplies(form.value.dataType))
+
+// 提示行把该字序在当前类型下的寄存器排布写出来，现场对着报文一眼就能对上
+const orderHint = computed(() => {
+  if (!form.value) return ''
+  const hit = BYTE_ORDERS.find(o => o.value === form.value.byteOrder) || BYTE_ORDERS[0]
+  const regs = form.value.dataType === 2 ? hit.regs64 : hit.regs32
+  return `${hit.tip}；寄存器依次为 ${regs}`
+})
+
 // 上限/下限用文本输入：留空代表不判该方向（Go 端是指针字段，null 即不启用）
 const hasLimit = computed(() => {
   if (!form.value) return false
@@ -155,6 +181,8 @@ watch(() => props.visible, v => {
   t.alarmActionTag = t.alarmActionTag || ''
   t.alarmActionText = t.alarmActionText || ''
   t.alarmEnabled = !!t.alarmEnabled
+  // 旧配置没有这个字段（undefined），回填成 0 = CDAB，行为与旧版一致
+  t.byteOrder = Number.isFinite(Number(t.byteOrder)) ? Number(t.byteOrder) : 0
   // 地址按十进制回填，想用别的形式自行在下拉里切（切换时会自动换算）
   t.addrFormat = 'dec'
   t.addrText = String(t.address === undefined || t.address === null ? 0 : t.address)
@@ -358,5 +386,9 @@ async function onOk() {
 
 .addr-err {
   color: #d03030;
+}
+
+.order-select {
+  width: 100%;
 }
 </style>

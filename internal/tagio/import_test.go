@@ -3,6 +3,7 @@ package tagio
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -157,8 +158,8 @@ func TestApplyMerge(t *testing.T) {
 		{ID: "b", Name: "压力", Address: 2, Scale: 1},
 	}
 	incoming := []models.TagPoint{
-		{Name: "温度", Address: 0, Unit: "K", Scale: 2},   // 更新
-		{Name: "流量", Address: 8},                         // 新增
+		{Name: "温度", Address: 0, Unit: "K", Scale: 2}, // 更新
+		{Name: "流量", Address: 8},                      // 新增
 	}
 	out := Apply(existing, incoming, ModeMerge, 5)
 	if len(out) != 3 {
@@ -316,5 +317,68 @@ func TestParseBoolAndType(t *testing.T) {
 	}
 	if fc, ok := parseFunctionCode("16 写多个寄存器"); !ok || fc != models.FCWriteMultipleRegisters {
 		t.Fatalf("中文功能码解析失败")
+	}
+}
+
+// 字节顺序列：认 CDAB/ABCD/BADC/DCBA 与常见中文别名；列缺失时回落默认 CDAB
+func TestParseByteOrderColumn(t *testing.T) {
+	cases := map[string]models.ByteOrder{
+		"CDAB": models.ByteOrderCDAB,
+		"abcd": models.ByteOrderABCD,
+		"大端":   models.ByteOrderABCD,
+		"BADC": models.ByteOrderBADC,
+		"DCBA": models.ByteOrderDCBA,
+		"小端":   models.ByteOrderDCBA,
+	}
+	for text, want := range cases {
+		p := parseCSV(t, modbus.FormatDec,
+			"名称,地址,数据类型,字节顺序\n"+"温度,0,Float32,"+text+"\n")
+		if len(p.Tags) != 1 {
+			t.Fatalf("%s 应解析出 1 个点，实际 %d（%v）", text, len(p.Tags), p.Errors)
+		}
+		if p.Tags[0].ByteOrder != want {
+			t.Fatalf("%s 应解析为 %s，实际 %s", text, want, p.Tags[0].ByteOrder)
+		}
+	}
+
+	// 旧文件没有这一列，必须仍是 CDAB（兼容性）
+	p := parseCSV(t, modbus.FormatDec, "名称,地址,数据类型\n温度,0,Float32\n")
+	if p.Tags[0].ByteOrder != models.ByteOrderCDAB {
+		t.Fatalf("缺列应回落 CDAB，实际 %s", p.Tags[0].ByteOrder)
+	}
+
+	// 非法值要报错并给出可选值，不能默默吞掉
+	p, err := ParseWith("名称,地址,数据类型,字节顺序\n温度,0,Float32,XYZW\n", "x.csv", modbus.FormatDec)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(p.Errors) != 1 {
+		t.Fatalf("非法字序应报 1 条错误，实际 %d", len(p.Errors))
+	}
+	if !strings.Contains(p.Errors[0].Message, "字节顺序无效") {
+		t.Fatalf("错误信息不对：%s", p.Errors[0].Message)
+	}
+}
+
+// 导出 → 导入 往返：字节顺序这一列不能被丢掉
+func TestByteOrderRoundTripCSV(t *testing.T) {
+	for _, order := range []models.ByteOrder{
+		models.ByteOrderCDAB, models.ByteOrderABCD,
+		models.ByteOrderBADC, models.ByteOrderDCBA} {
+		tags := []models.TagPoint{{
+			ID: "t1", Name: "温度", DataType: models.Float32, ByteOrder: order,
+			Address: 100, Unit: "°C", Scale: 1, DecimalPlaces: 1,
+			IsEnabled: true, TrendEnabled: true,
+		}}
+		rows := Rows(tags)
+		if len(rows[0]) != len(Header()) {
+			t.Fatalf("导出列数 %d 与表头 %d 不一致", len(rows[0]), len(Header()))
+		}
+		text := "名称,地址,数据类型,字节顺序\n" +
+			tags[0].Name + ",100,Float32," + order.String() + "\n"
+		p := parseCSV(t, modbus.FormatDec, text)
+		if p.Tags[0].ByteOrder != order {
+			t.Fatalf("%s 往返后变成 %s", order, p.Tags[0].ByteOrder)
+		}
 	}
 }

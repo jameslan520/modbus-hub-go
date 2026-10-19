@@ -30,6 +30,7 @@ type CalibrationRequest struct {
 	ChannelID    string                      `json:"channelId"`
 	StartAddress uint16                      `json:"startAddress"`
 	DataType     models.TagDataType          `json:"dataType"`
+	ByteOrder    models.ByteOrder            `json:"byteOrder"`
 	Mode         models.CalibrationWriteMode `json:"mode"`
 	Points       []models.CalibrationPoint   `json:"points"`
 }
@@ -615,7 +616,8 @@ func (a *App) FitCalibration(points []models.CalibrationPoint) FitResult {
 
 // DownloadCalibration 把标定表或斜率截距写入从机保持寄存器，返回写入的寄存器数
 func (a *App) DownloadCalibration(req CalibrationRequest) (int, error) {
-	regs, summary, err := calib.BuildDownload(req.Mode, req.DataType, req.StartAddress, req.Points)
+	regs, summary, err := calib.BuildDownload(req.Mode, req.DataType, req.ByteOrder,
+		req.StartAddress, req.Points)
 	if err != nil {
 		return 0, err
 	}
@@ -681,6 +683,7 @@ func (a *App) ExportTags(channelIDs []string) (string, error) {
 				t.Name,
 				strconv.FormatInt(int64(t.Address), 10),
 				t.DataType.String(),
+				byteOrderOrDash(t),
 				fmt.Sprintf("0x%02X", t.FunctionCode),
 				unitOrDash(t.Unit),
 				strconv.FormatFloat(t.Scale, 'f', -1, 64),
@@ -704,7 +707,7 @@ func (a *App) ExportTags(channelIDs []string) (string, error) {
 		return "", errors.New("没有点位可导出")
 	}
 
-	header := []string{"序号", "点位名称", "地址", "数据类型", "功能码", "单位",
+	header := []string{"序号", "点位名称", "地址", "数据类型", "字节顺序", "功能码", "单位",
 		"倍率", "偏移", "小数位", "启用", "记录曲线", "实时值", "十六进制", "原始寄存器", "质量", "更新时间"}
 	if multi {
 		header = append([]string{"通道"}, header...)
@@ -764,6 +767,14 @@ func unitOrDash(unit string) string {
 		return "-"
 	}
 	return unit
+}
+
+// byteOrderOrDash 单寄存器类型没有字序可言，导出时留个 "-" 免得看着像漏配
+func byteOrderOrDash(t models.TagPoint) string {
+	if !t.ByteOrder.Applies(t.DataType) {
+		return "-"
+	}
+	return t.ByteOrder.String()
 }
 
 func displayOrDash(v models.TagValue) string {

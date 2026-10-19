@@ -300,7 +300,7 @@ func (c *RTUClient) WriteTag(tag models.TagPoint, value any) error {
 	case models.FCWriteSingleRegister:
 		return c.WriteSingleRegister(tag.SlaveID, tag.Address, uint16(uint32(ToFloat(value))&0xFFFF))
 	case models.FCWriteMultipleRegisters:
-		return c.WriteMultipleRegisters(tag.SlaveID, tag.Address, EncodeRegisters(value, tag.DataType))
+		return c.WriteMultipleRegisters(tag.SlaveID, tag.Address, EncodeRegisters(value, tag))
 	default:
 		return fmt.Errorf("当前点为只读（功能码 03），不可写入")
 	}
@@ -347,7 +347,7 @@ func DecodeFromBlock(tag models.TagPoint, regs []uint16, blockStart uint16) mode
 	}
 	slice := make([]uint16, tag.RegisterCount())
 	copy(slice, regs[offset:offset+tag.RegisterCount()])
-	raw := ParseRegisters(slice, tag.DataType)
+	raw := ParseRegisters(slice, tag)
 	numeric := ToFloat(raw)*tag.Scale + tag.Offset
 	result.RawValue = raw
 	result.NumericValue = &numeric

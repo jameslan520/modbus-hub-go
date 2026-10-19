@@ -38,6 +38,12 @@
           <el-option v-for="m in CALIB_WRITE_MODES" :key="m.value" :label="m.label" :value="m.value" />
         </el-select>
       </span>
+      <span v-if="orderVisible" class="field">
+        <label>字节顺序</label>
+        <el-select v-model="byteOrder" size="small" @change="onParamChange">
+          <el-option v-for="o in BYTE_ORDERS" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+      </span>
       <span class="calib-state" :class="running ? 'ok' : 'bad'">
         {{ running ? '通道已连接' : '通道未运行' }}
       </span>
@@ -124,9 +130,11 @@
 import {computed, ref, watch} from 'vue'
 import {ElMessage, ElMessageBox} from 'element-plus'
 import {
+  BYTE_ORDERS,
   CALIB_SAMPLE_COUNTS,
   CALIB_WRITE_MODES,
   DATA_TYPES,
+  byteOrderApplies,
   clockText
 } from '../constants'
 import {
@@ -149,9 +157,13 @@ const sampleCount = ref(8)
 const startAddress = ref(0)
 const dataType = ref(1)
 const mode = ref(0)
+const byteOrder = ref(0)
 const points = ref([])
 const samples = ref([])
 const standard = ref(null)
+
+// UInt16 只有一个寄存器，没有字序问题，切到 Float32/Int32/Double64 才显示下拉
+const orderVisible = computed(() => byteOrderApplies(dataType.value))
 const fit = ref({ok: false, slopeText: '--', interceptText: '--', hint: ''})
 const downloading = ref(false)
 
@@ -218,6 +230,7 @@ function loadFromChannel() {
   startAddress.value = Number(c.calibrationStartAddress) || 0
   dataType.value = DATA_TYPES.some(d => d.value === c.calibrationDataType) ? c.calibrationDataType : 1
   mode.value = c.calibrationWriteMode === 1 ? 1 : 0
+  byteOrder.value = Number.isFinite(Number(c.calibrationByteOrder)) ? Number(c.calibrationByteOrder) : 0
   points.value = (c.calibrationPoints || []).map(p => ({
     measured: Number(p.measured) || 0,
     standard: Number(p.standard) || 0
@@ -264,6 +277,7 @@ function emitUpdate() {
     calibrationSampleCount: sampleCount.value,
     calibrationStartAddress: Number(startAddress.value) || 0,
     calibrationDataType: dataType.value,
+    calibrationByteOrder: byteOrder.value,
     calibrationWriteMode: mode.value,
     calibrationPoints: points.value.map(p => ({
       measured: p.measured,
@@ -370,6 +384,7 @@ async function onDownload() {
       channelId: props.channel.id,
       startAddress: addr,
       dataType: dataType.value,
+      byteOrder: byteOrder.value,
       mode: mode.value,
       points: points.value.map(p => ({measured: p.measured, standard: p.standard}))
     })

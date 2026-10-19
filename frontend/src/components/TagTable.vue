@@ -44,8 +44,12 @@
             </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column label="类型" width="90">
-          <template #default="{row}">{{ dataTypeLabel(row.dataType) }}</template>
+        <el-table-column label="类型" width="100">
+          <template #default="{row}">
+            <el-tooltip :content="typeTip(row)" placement="top" :show-after="200" :disabled="!typeTip(row)">
+              <span>{{ dataTypeLabel(row.dataType) }}<span v-if="typeOrderLabel(row)" class="order-tag">{{ typeOrderLabel(row) }}</span></span>
+            </el-tooltip>
+          </template>
         </el-table-column>
         <el-table-column label="功能码" width="140">
           <template #default="{row}">{{ functionCodeLabel(row.functionCode) }}</template>
@@ -114,6 +118,9 @@ import {
   addressTexts,
   alarmKindLabel,
   alarmKindType,
+  byteOrderApplies,
+  byteOrderLabel,
+  byteOrderTip,
   dataTypeLabel,
   functionCodeLabel
 } from '../constants'
@@ -237,6 +244,17 @@ function alarmState(row) {
 }
 
 // 配了报警（启用了且有任一限值）才显示"正常"，否则提示未配置
+// 只有多寄存器类型才带字序标记；UInt16 没有字序，不显示免得看着像漏配
+function typeOrderLabel(row) {
+  return byteOrderApplies(row.dataType) ? byteOrderLabel(row.byteOrder) : ''
+}
+
+// 悬浮提示写清这个字序下寄存器怎么排，现场对着报文一眼能核对
+function typeTip(row) {
+  if (!byteOrderApplies(row.dataType)) return ''
+  return `字节顺序 ${byteOrderLabel(row.byteOrder)}：${byteOrderTip(row.byteOrder)}`
+}
+
 function hasAlarm(row) {
   return !!row.alarmEnabled &&
     (row.alarmHigh !== null && row.alarmHigh !== undefined ||
@@ -353,6 +371,14 @@ function onBatch() {
 }
 
 .mono {
+  font-family: Consolas, monospace;
+}
+
+/* 类型列里的字序标记：小一号、浅色，不抢主类型的视觉重点 */
+.order-tag {
+  margin-left: 4px;
+  font-size: 11px;
+  color: #909399;
   font-family: Consolas, monospace;
 }
 

@@ -128,6 +128,7 @@ export namespace main {
 	    channelId: string;
 	    startAddress: number;
 	    dataType: number;
+	    byteOrder: number;
 	    mode: number;
 	    points: models.CalibrationPoint[];
 	
@@ -140,6 +141,7 @@ export namespace main {
 	        this.channelId = source["channelId"];
 	        this.startAddress = source["startAddress"];
 	        this.dataType = source["dataType"];
+	        this.byteOrder = source["byteOrder"];
 	        this.mode = source["mode"];
 	        this.points = this.convertValues(source["points"], models.CalibrationPoint);
 	    }
@@ -255,6 +257,7 @@ export namespace models {
 	    functionCode: number;
 	    address: number;
 	    dataType: number;
+	    byteOrder: number;
 	    unit: string;
 	    scale: number;
 	    offset: number;
@@ -281,6 +284,7 @@ export namespace models {
 	        this.functionCode = source["functionCode"];
 	        this.address = source["address"];
 	        this.dataType = source["dataType"];
+	        this.byteOrder = source["byteOrder"];
 	        this.unit = source["unit"];
 	        this.scale = source["scale"];
 	        this.offset = source["offset"];
@@ -314,6 +318,7 @@ export namespace models {
 	    calibrationSampleCount: number;
 	    calibrationStartAddress: number;
 	    calibrationDataType: number;
+	    calibrationByteOrder: number;
 	    calibrationWriteMode: number;
 	    calibrationPoints: CalibrationPoint[];
 	
@@ -340,6 +345,7 @@ export namespace models {
 	        this.calibrationSampleCount = source["calibrationSampleCount"];
 	        this.calibrationStartAddress = source["calibrationStartAddress"];
 	        this.calibrationDataType = source["calibrationDataType"];
+	        this.calibrationByteOrder = source["calibrationByteOrder"];
 	        this.calibrationWriteMode = source["calibrationWriteMode"];
 	        this.calibrationPoints = this.convertValues(source["calibrationPoints"], CalibrationPoint);
 	    }

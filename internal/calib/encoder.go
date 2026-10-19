@@ -58,20 +58,24 @@ func roundClamp(v, lo, hi float64) float64 {
 }
 
 // EncodeTable 编码标定表：每组先写实测值再写标准值
-func EncodeTable(points []models.CalibrationPoint, dt models.TagDataType) []uint16 {
+func EncodeTable(points []models.CalibrationPoint, dt models.TagDataType,
+	order models.ByteOrder) []uint16 {
 	regs := make([]uint16, 0, len(points)*2*RegisterCount(dt))
+	tpl := models.TagPoint{DataType: dt, ByteOrder: order}
 	for _, p := range points {
-		regs = append(regs, modbus.EncodeRegisters(ToTyped(p.Measured, dt), dt)...)
-		regs = append(regs, modbus.EncodeRegisters(ToTyped(p.Standard, dt), dt)...)
+		regs = append(regs, modbus.EncodeRegisters(ToTyped(p.Measured, dt), tpl)...)
+		regs = append(regs, modbus.EncodeRegisters(ToTyped(p.Standard, dt), tpl)...)
 	}
 	return regs
 }
 
 // EncodeSlopeIntercept 编码斜率与截距：先 k 后 b（标准 = k × 实测 + b）
-func EncodeSlopeIntercept(slope, intercept float64, dt models.TagDataType) []uint16 {
+func EncodeSlopeIntercept(slope, intercept float64, dt models.TagDataType,
+	order models.ByteOrder) []uint16 {
 	regs := make([]uint16, 0, 2*RegisterCount(dt))
-	regs = append(regs, modbus.EncodeRegisters(ToTyped(slope, dt), dt)...)
-	regs = append(regs, modbus.EncodeRegisters(ToTyped(intercept, dt), dt)...)
+	tpl := models.TagPoint{DataType: dt, ByteOrder: order}
+	regs = append(regs, modbus.EncodeRegisters(ToTyped(slope, dt), tpl)...)
+	regs = append(regs, modbus.EncodeRegisters(ToTyped(intercept, dt), tpl)...)
 	return regs
 }
 
@@ -102,7 +106,7 @@ func FitLine(points []models.CalibrationPoint) (slope, intercept float64, ok boo
 
 // BuildDownload 按通道的标定参数生成待写入的寄存器与说明文本
 func BuildDownload(mode models.CalibrationWriteMode, dataType models.TagDataType,
-	start uint16, points []models.CalibrationPoint) ([]uint16, string, error) {
+	order models.ByteOrder, start uint16, points []models.CalibrationPoint) ([]uint16, string, error) {
 
 	var regs []uint16
 	var summary string
@@ -112,14 +116,14 @@ func BuildDownload(mode models.CalibrationWriteMode, dataType models.TagDataType
 		if !ok {
 			return nil, "", errors.New("斜率截距至少需要 2 个实测值不同的标定点")
 		}
-		regs = EncodeSlopeIntercept(slope, intercept, dataType)
+		regs = EncodeSlopeIntercept(slope, intercept, dataType, order)
 		summary = fmt.Sprintf("内容：斜率 k = %s，截距 b = %s（标准 = k × 实测 + b）",
 			Format(slope), Format(intercept))
 	} else {
 		if len(points) == 0 {
 			return nil, "", errors.New("请至少添加 1 个标定点")
 		}
-		regs = EncodeTable(points, dataType)
+		regs = EncodeTable(points, dataType, order)
 		summary = fmt.Sprintf("内容：标定表 %d 组，每组先写实测均值再写标准值", len(points))
 	}
 

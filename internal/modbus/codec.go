@@ -1,6 +1,7 @@
 package modbus
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -10,86 +11,141 @@ import (
 	"modbus-hub-go/internal/models"
 )
 
-// ParseRegisters 按数据类型解析寄存器切片。
-// Float32 / Int32 为 CDAB（寄存器0=低字 CD，寄存器1=高字 AB）；
-// Double64 为 GHEF CDAB（寄存器依次 GH、EF、CD、AB）。
-func ParseRegisters(regs []uint16, dt models.TagDataType) any {
+// RegisterCount 该数据类型占用的寄存器数（与 models.TagPoint.RegisterCount 一致，
+// 这里再放一份是为了让编解码不依赖点位对象）
+func RegisterCount(dt models.TagDataType) int {
 	switch dt {
-	case models.UInt16:
-		if len(regs) == 0 {
-			return uint16(0)
-		}
-		return regs[0]
-	case models.Int32:
-		return RegistersToInt32Cdab(regs)
-	case models.Float32:
-		return RegistersToFloatCdab(regs)
+	case models.Float32, models.Int32:
+		return 2
 	case models.Double64:
-		return RegistersToDoubleGhefCdab(regs)
+		return 4
 	default:
+		return 1
+	}
+}
+
+// applyByteOrder 把大端字节切片按字序规则重排，返回重排后的下标序列。
+//
+// 输入是数值的大端字节序列（byte[0] 为最高字节，记作 A），规则：
+//   - ABCD 恒等：[A B C D]      → [AB][CD]
+//   - CDAB 以字为单位反转：[C D A B] → [CD][AB]
+//   - BADC 每个字内两字节交换：[B A D C] → [BA][DC]
+//   - DCBA 全反转：[D C B A]    → [DC][BA]
+//
+// 同一套定义推广到 64 位就是现场熟知的 GHEF CDAB（CDAB）、AB CD EF GH（ABCD）、
+// BA DC FE HG（BADC）、HG FE DC BA（DCBA），不需要为 64 位单写一份。
+func applyByteOrder(src []byte, order models.ByteOrder) []byte {
+	n := len(src)
+	out := make([]byte, n)
+	switch order {
+	case models.ByteOrderABCD:
+		copy(out, src)
+	case models.ByteOrderCDAB:
+		// 以 2 字节（一个寄存器）为一组，整组倒序排列
+		for i := 0; i+1 < n; i += 2 {
+			j := n - 2 - i
+			out[i], out[i+1] = src[j], src[j+1]
+		}
+	case models.ByteOrderBADC:
+		// 组内两字节对调，组间顺序不变
+		for i := 0; i+1 < n; i += 2 {
+			out[i], out[i+1] = src[i+1], src[i]
+		}
+	case models.ByteOrderDCBA:
+		for i := 0; i < n; i++ {
+			out[i] = src[n-1-i]
+		}
+	default:
+		copy(out, src)
+	}
+	return out
+}
+
+// ParseRegisters 按点位的数据类型与字节顺序解析寄存器切片。
+// 字节顺序只对 Float32 / Int32 / Double64 生效；UInt16 只有一个寄存器，直接取。
+func ParseRegisters(regs []uint16, tag models.TagPoint) any {
+	dt := tag.DataType
+	if !tag.ByteOrder.Applies(dt) {
 		if len(regs) == 0 {
 			return uint16(0)
 		}
+		if dt == models.UInt16 {
+			return regs[0]
+		}
 		return regs[0]
 	}
+
+	need := RegisterCount(dt)
+	if len(regs) < need {
+		return zeroValue(dt)
+	}
+	// 先按线序摊成字节（寄存器内高字节在前），再按字序规则重排回大端
+	raw := make([]byte, need*2)
+	for i := 0; i < need; i++ {
+		raw[i*2] = byte(regs[i] >> 8)
+		raw[i*2+1] = byte(regs[i])
+	}
+	be := applyByteOrder(raw, tag.ByteOrder)
+
+	switch dt {
+	case models.Int32:
+		return int32(binary.BigEndian.Uint32(be))
+	case models.Float32:
+		return math.Float32frombits(binary.BigEndian.Uint32(be))
+	case models.Double64:
+		return math.Float64frombits(binary.BigEndian.Uint64(be))
+	default:
+		return binary.BigEndian.Uint16(be)
+	}
 }
 
-func RegistersToFloatCdab(regs []uint16) float32 {
-	if len(regs) < 2 {
-		return 0
+func zeroValue(dt models.TagDataType) any {
+	switch dt {
+	case models.Int32:
+		return int32(0)
+	case models.Float32:
+		return float32(0)
+	case models.Double64:
+		return float64(0)
+	default:
+		return uint16(0)
 	}
-	bits := uint32(regs[0]) | uint32(regs[1])<<16
-	return math.Float32frombits(bits)
-}
-
-func RegistersToInt32Cdab(regs []uint16) int32 {
-	if len(regs) < 2 {
-		return 0
-	}
-	bits := uint32(regs[0]) | uint32(regs[1])<<16
-	return int32(bits)
-}
-
-func RegistersToDoubleGhefCdab(regs []uint16) float64 {
-	if len(regs) < 4 {
-		return 0
-	}
-	bits := uint64(regs[0]) | uint64(regs[1])<<16 | uint64(regs[2])<<32 | uint64(regs[3])<<48
-	return math.Float64frombits(bits)
 }
 
 // EncodeRegisters 把值编成寄存器（与 ParseRegisters 严格互逆）
-func EncodeRegisters(value any, dt models.TagDataType) []uint16 {
+func EncodeRegisters(value any, tag models.TagPoint) []uint16 {
+	dt := tag.DataType
+	need := RegisterCount(dt)
+
+	var be []byte
 	switch dt {
 	case models.Int32:
-		return Int32ToRegistersCdab(toInt32(value))
+		be = make([]byte, 4)
+		binary.BigEndian.PutUint32(be, uint32(toInt32(value)))
 	case models.Float32:
-		return FloatToRegistersCdab(ToFloat(value))
+		be = make([]byte, 4)
+		binary.BigEndian.PutUint32(be, math.Float32bits(float32(ToFloat(value))))
 	case models.Double64:
-		return DoubleToRegistersGhefCdab(ToFloat(value))
+		be = make([]byte, 8)
+		binary.BigEndian.PutUint64(be, math.Float64bits(ToFloat(value)))
 	default:
-		return []uint16{uint16(toUint16(value))}
+		be = make([]byte, 2)
+		binary.BigEndian.PutUint16(be, toUint16(value))
 	}
-}
 
-func FloatToRegistersCdab(v float64) []uint16 {
-	bits := math.Float32bits(float32(v))
-	return []uint16{uint16(bits & 0xFFFF), uint16(bits >> 16)}
-}
-
-func Int32ToRegistersCdab(v int32) []uint16 {
-	bits := uint32(v)
-	return []uint16{uint16(bits & 0xFFFF), uint16(bits >> 16)}
-}
-
-func DoubleToRegistersGhefCdab(v float64) []uint16 {
-	bits := math.Float64bits(v)
-	return []uint16{
-		uint16(bits),
-		uint16(bits >> 16),
-		uint16(bits >> 32),
-		uint16(bits >> 48),
+	if !tag.ByteOrder.Applies(dt) {
+		// 单寄存器：无论什么字序都按线序直接给（与旧版一致）
+		return []uint16{uint16(be[0])<<8 | uint16(be[1])}
 	}
+
+	// applyByteOrder 是自逆的 ABCD/CDAB 是对合、BADC 是对合、DCBA 是对合，
+	// 所以编码用同一条规则把大端排回线序即可
+	raw := applyByteOrder(be, tag.ByteOrder)
+	out := make([]uint16, 0, need)
+	for i := 0; i < need; i++ {
+		out = append(out, uint16(raw[i*2])<<8|uint16(raw[i*2+1]))
+	}
+	return out
 }
 
 // ToFloat 把任意原始值转成 float64
