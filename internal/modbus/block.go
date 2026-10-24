@@ -89,6 +89,8 @@ func (b *blockBuilder) build() ReadBlock {
 type WriteItem struct {
 	Tag   models.TagPoint
 	Value string
+	// Mode 输入口径；零值（空串）按原始值处理
+	Mode models.InputMode
 }
 
 // EnsureWritableConsecutive 校验批量写入的点可写且地址首尾相接
@@ -150,7 +152,7 @@ func EncodeBlock(items []WriteItem) ([]uint16, error) {
 
 	var regs []uint16
 	for _, it := range ordered {
-		v, err := ParseInput(it.Tag, it.Value)
+		v, err := ParseWriteInput(it.Tag, it.Value, it.Mode)
 		if err != nil {
 			return nil, fmt.Errorf("%s：%v", it.Tag.Name, err)
 		}

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"math"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,6 +18,11 @@ func newTestHub(t *testing.T) *Hub {
 	h.mu.Lock()
 	h.channels = []models.ChannelConfig{}
 	h.mu.Unlock()
+	// 历史库也要隔离。New 默认指向 exe 同目录，而落库现在是默认开启的，
+	// 同包内几个测试都会 deliver 良好值，不隔离的话彼此的历史数据会串在一起。
+	h.history = store.New(filepath.Join(t.TempDir(), "history"),
+		store.Settings{Enabled: true, RetentionDays: 7, MaxSizeMB: 64})
+	t.Cleanup(func() { h.history.Close() })
 	return h
 }
 
@@ -119,7 +125,10 @@ func TestHandleValuesWritesHistory(t *testing.T) {
 	h.channels = []models.ChannelConfig{testChannel("ch1", []models.TagPoint{tag})}
 	h.mu.Unlock()
 
-	// 默认关闭，不应写盘
+	// 落库默认开启（修"历史查询空白"时改的），这里显式关掉验证关闭时确实不写盘
+	if err := h.SetHistorySettings(store.Settings{Enabled: false, RetentionDays: 7, MaxSizeMB: 64}); err != nil {
+		t.Fatalf("保存落库策略失败: %v", err)
+	}
 	base := time.Now().Add(-time.Hour)
 	h.deliver("ch1", []models.TagValue{goodValue("tag1", 11, base)})
 	if r, _ := h.HistoryRange("tag1"); r.Count != 0 {

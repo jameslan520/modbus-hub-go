@@ -159,6 +159,35 @@ export function alarmKindType(v) {
   return hit ? hit.type : 'info'
 }
 
+// 写入窗口的输入口径。三个口径说的是同一个寄存器内容，只是站的角度不同；
+// 换算一律由 Go 端 modbus.ParseWriteInput 完成，前端不重复实现，避免两边算得不一样。
+export const INPUT_MODES = [
+  {
+    value: 'raw',
+    label: '原始值',
+    tip: '寄存器里真正存放的十进制数值，不乘倍率、不加偏移。可带单位后缀，会自动去掉。',
+    placeholder: '例如 1234'
+  },
+  {
+    value: 'hex',
+    label: '十六进制',
+    tip: '按 IEEE754 位模式填写，跟点表「十六进制」列显示的是同一套东西，高字节在前。' +
+      '下发时再按本点的字节顺序拆成寄存器。可写 0x 前缀、h 后缀，空格与下划线会自动去掉。',
+    placeholder: '例如 0x4048F5C3'
+  },
+  {
+    value: 'eng',
+    label: '工程值',
+    tip: '现场读数，由程序按 原始值 = (工程值 − 偏移) ÷ 倍率 反算出报文内容。' +
+      '整数类型反算出小数会就近取整，下发前请核一下预览。',
+    placeholder: '例如 12.5'
+  }
+]
+
+export function inputModeMeta(v) {
+  return INPUT_MODES.find(m => m.value === v) || INPUT_MODES[0]
+}
+
 // 历史回放的时间范围（小时）
 export const HISTORY_RANGES = [
   {value: 1, label: '最近 1 小时'},

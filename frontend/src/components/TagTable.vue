@@ -112,7 +112,7 @@
 
 <script setup>
 import {computed, ref} from 'vue'
-import {ElMessage, ElMessageBox} from 'element-plus'
+import {ElMessage} from 'element-plus'
 import {InfoFilled} from '@element-plus/icons-vue'
 import {
   addressTexts,
@@ -211,12 +211,6 @@ function registersText(regs) {
     .join(' ')
 }
 
-// 写入弹窗的默认值固定用工程值，避免切换口径后回填成十六进制
-function rawDisplay(row) {
-  const v = tagValue(row)
-  return v && v.displayValue ? v.displayValue : '--'
-}
-
 function cellTitle(row) {
   return `${baseMeta.value.tip}\n点击复制：${displayValue(row)}`
 }
@@ -296,28 +290,12 @@ function onSelectionChange(rows) {
   selection.value = rows
 }
 
-async function onWrite(row) {
+function onWrite(row) {
   if (!isWritable(row)) {
     ElMessage.warning('只读点（功能码 03）不可写入')
     return
   }
-  try {
-    const {value} = await ElMessageBox.prompt(
-      `写入 ${row.name}（地址 ${row.address}，${dataTypeLabel(row.dataType)}）`,
-      '写入寄存器',
-      {inputPlaceholder: '请输入数值，可带单位', inputValue: stripUnit(rawDisplay(row))}
-    )
-    if (value === null || value === undefined || value === '') return
-    emit('write', row, String(value).trim())
-  } catch (e) {
-    // 用户取消
-  }
-}
-
-function stripUnit(text) {
-  if (!text) return ''
-  const m = String(text).trim().split(' ')[0]
-  return isNaN(Number(m)) ? '' : m
+  emit('write', row)
 }
 
 function onTrend(row) {

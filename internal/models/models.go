@@ -124,6 +124,56 @@ func (o ByteOrder) Applies(dt TagDataType) bool {
 	return dt == Float32 || dt == Int32 || dt == Double64
 }
 
+// InputMode 写入窗口的输入口径。
+// 三种口径说的是同一个寄存器里的内容，只是站的角度不同：
+//
+//	raw 原始值 —— 寄存器里真正放的十进制数值，不乘倍率不加偏移
+//	hex 十六进制 —— 按 IEEE754 位模式填，跟点表里"十六进制"列显示的是一套东西
+//	eng 工程值 —— 带倍率/偏移的现场读数，由程序反算成原始值再下发
+type InputMode string
+
+const (
+	InputModeRaw InputMode = "raw"
+	InputModeHex InputMode = "hex"
+	InputModeEng InputMode = "eng"
+)
+
+var inputModeNames = map[InputMode]string{
+	InputModeRaw: "raw",
+	InputModeHex: "hex",
+	InputModeEng: "eng",
+}
+
+var inputModeLabels = map[InputMode]string{
+	InputModeRaw: "原始值（十进制）",
+	InputModeHex: "十六进制（位模式）",
+	InputModeEng: "工程值（反算）",
+}
+
+// ParseInputMode 把界面传来的字符串转成输入口径，空值与非法值一律当原始值处理
+func ParseInputMode(s string) InputMode {
+	m := InputMode(strings.ToLower(strings.TrimSpace(s)))
+	if _, ok := inputModeNames[m]; ok {
+		return m
+	}
+	return InputModeRaw
+}
+
+func (m InputMode) String() string {
+	if n, ok := inputModeNames[m]; ok {
+		return n
+	}
+	return string(InputModeRaw)
+}
+
+// Label 界面下拉显示的中文名
+func (m InputMode) Label() string {
+	if n, ok := inputModeLabels[m]; ok {
+		return n
+	}
+	return inputModeLabels[InputModeRaw]
+}
+
 // ChannelState 通道运行状态
 type ChannelState string
 
@@ -269,14 +319,14 @@ type ChannelConfig struct {
 	IsEnabled         bool       `json:"isEnabled"`
 	Tags              []TagPoint `json:"tags"`
 
-	CalibrationTagID        string               `json:"calibrationTagId,omitempty"`
-	CalibrationSampleCount  int                  `json:"calibrationSampleCount"`
-	CalibrationStartAddress uint16               `json:"calibrationStartAddress"`
-	CalibrationDataType     TagDataType          `json:"calibrationDataType"`
+	CalibrationTagID        string      `json:"calibrationTagId,omitempty"`
+	CalibrationSampleCount  int         `json:"calibrationSampleCount"`
+	CalibrationStartAddress uint16      `json:"calibrationStartAddress"`
+	CalibrationDataType     TagDataType `json:"calibrationDataType"`
 	// CalibrationByteOrder 标定下载的字节顺序，零值 CDAB 与旧版一致
-	CalibrationByteOrder    ByteOrder            `json:"calibrationByteOrder"`
-	CalibrationWriteMode    CalibrationWriteMode `json:"calibrationWriteMode"`
-	CalibrationPoints       []CalibrationPoint   `json:"calibrationPoints"`
+	CalibrationByteOrder ByteOrder            `json:"calibrationByteOrder"`
+	CalibrationWriteMode CalibrationWriteMode `json:"calibrationWriteMode"`
+	CalibrationPoints    []CalibrationPoint   `json:"calibrationPoints"`
 }
 
 // SerialSignature 串口参数签名，用于判断是否需要重连

@@ -27,22 +27,27 @@ type ChannelRuntime struct {
 type WriteTagRequest struct {
 	TagID string `json:"tagId"`
 	Value string `json:"value"`
+	// Mode 输入口径（raw/hex/eng），空串按 raw 处理
+	Mode string `json:"mode,omitempty"`
 }
 
 // TrendSeries 一条曲线（多点位对比时每个点位一条）
 type TrendSeries struct {
-	TagID  string         `json:"tagId"`
-	Name   string         `json:"name"`
-	Unit   string         `json:"unit"`
-	High   *float64       `json:"high,omitempty"`
-	Low    *float64       `json:"low,omitempty"`
-	Points []trend.Point  `json:"points"`
+	TagID  string        `json:"tagId"`
+	Name   string        `json:"name"`
+	Unit   string        `json:"unit"`
+	High   *float64      `json:"high,omitempty"`
+	Low    *float64      `json:"low,omitempty"`
+	Points []trend.Point `json:"points"`
 }
 
 type traffic struct {
 	tx int64
 	rx int64
 }
+
+// histErrThrottle 同一个点位的落库失败日志的最小间隔
+const histErrThrottle = 5 * time.Minute
 
 // Hub 多通道管理器
 type Hub struct {
@@ -59,6 +64,8 @@ type Hub struct {
 	alarms *alarm.Engine
 	// history 历史落库；未开启时 Append 会直接返回
 	history *store.History
+	// histErr 每个点位上次报落库失败的时间，用来给失败日志节流
+	histErr map[string]time.Time
 }
 
 func New(cb Callbacks) *Hub {
@@ -70,6 +77,7 @@ func New(cb Callbacks) *Hub {
 		lastState: make(map[string]models.ChannelState),
 		trends:    trend.NewStore(),
 		history:   store.New(config.HistoryDir(), config.LoadHistorySettings()),
+		histErr:   make(map[string]time.Time),
 	}
 	h.alarms = alarm.New(func(ev alarm.Event) {
 		if h.cb.OnAlarm != nil {
@@ -129,21 +137,43 @@ func (h *Hub) handleValues(channelID string, values []models.TagValue) {
 		}
 		values[i].AlarmState = string(h.alarms.Evaluate(channelID, name, tag, v, ts))
 		if record && tag.IsEnabled && tag.TrendEnabled {
-			if err := h.history.Append(tag.ID, ts, v); err != nil && h.cb.OnLog != nil {
-				h.cb.OnLog(models.LogEntry{
-					Timestamp:   models.Now(),
-					Level:       "Warn",
-					ChannelName: name,
-					Message:     fmt.Sprintf("历史落库失败 %s：%v", tag.Name, err),
-				})
+			if err := h.history.Append(tag.ID, ts, v); err != nil {
+				h.logHistoryError(name, tag.Name, err)
 			}
 		}
 	}
 }
 
+// logHistoryError 落库失败日志按点位节流。
+// 落库默认开启后，一旦磁盘不可写就会每个采集周期、每个点位各刷一条——
+// 一个 100 点、1 秒周期的通道一分钟就是 6000 条，日志区直接被淹掉。
+// 这里每个点位 5 分钟最多报一次，够现场发现问题，又不至于刷屏。
+func (h *Hub) logHistoryError(channelName, tagName string, err error) {
+	if h.cb.OnLog == nil {
+		return
+	}
+	key := channelName + "|" + tagName
+	now := time.Now()
+	h.mu.Lock()
+	last, dup := h.histErr[key]
+	if !dup || now.Sub(last) > histErrThrottle {
+		h.histErr[key] = now
+		h.mu.Unlock()
+	} else {
+		h.mu.Unlock()
+		return
+	}
+	h.cb.OnLog(models.LogEntry{
+		Timestamp:   models.Now(),
+		Level:       "Warn",
+		ChannelName: channelName,
+		Message:     fmt.Sprintf("历史落库失败 %s：%v（5 分钟内不再重复）", tagName, err),
+	})
+}
+
 // runAlarmAction 报警上升沿的联动输出：把预设值写进另一个可写点位
 func (h *Hub) runAlarmAction(channelID, tagID, value string) string {
-	if err := h.WriteTag(channelID, tagID, value); err != nil {
+	if err := h.WriteTag(channelID, tagID, value, models.InputModeRaw); err != nil {
 		return "联动写入失败：" + err.Error()
 	}
 	return "联动写入 " + value
@@ -480,15 +510,15 @@ func (h *Hub) Values(channelID string) []models.TagValue {
 	return out
 }
 
-// WriteTag 单点写入
-func (h *Hub) WriteTag(channelID, tagID, value string) error {
+// WriteTag 单点写入。mode 为空时按原始值处理，历史调用点不受影响。
+func (h *Hub) WriteTag(channelID, tagID, value string, mode models.InputMode) error {
 	h.mu.Lock()
 	svc, ok := h.running[channelID]
 	h.mu.Unlock()
 	if !ok {
 		return errors.New("通道未运行")
 	}
-	return svc.WriteTag(tagID, value)
+	return svc.WriteTag(tagID, value, mode)
 }
 
 // WriteTags 批量连续写入
@@ -653,6 +683,17 @@ func (h *Hub) Find(id string) (models.ChannelConfig, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.findLocked(id)
+}
+
+// FindTag 按通道与点位 Id 查找点位定义（写入预览需要倍率、偏移、字节顺序这些参数）
+func (h *Hub) FindTag(channelID, tagID string) (models.TagPoint, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cfg, ok := h.findLocked(channelID)
+	if !ok {
+		return models.TagPoint{}, false
+	}
+	return findTag(cfg, tagID)
 }
 
 func (h *Hub) findLocked(id string) (models.ChannelConfig, bool) {

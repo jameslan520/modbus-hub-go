@@ -9,6 +9,16 @@
     @opened="onOpened"
     @closed="onClosed"
   >
+    <div v-if="!settings.enabled" class="hist-banner">
+      <span class="banner-icon">!</span>
+      <span class="banner-text">
+        落库未开启，历史库不会写入任何数据。
+        <b>实时曲线走的是内存缓冲，跟这个开关无关</b>，所以曲线照常有数据、历史查询却是空的。
+        打开下方「落库」开关后开始记录，此前的曲线数据无法补录。
+      </span>
+      <el-button size="small" type="primary" plain @click="onEnableRecord">立即开启</el-button>
+    </div>
+
     <div class="hist-toolbar">
       <span class="field-label">点位</span>
       <el-select v-model="tagId" size="small" class="sel-tag" @change="onTagChange">
@@ -47,7 +57,12 @@
       <el-button size="small" type="danger" @click="onClearTag">清理该点位</el-button>
     </div>
 
-    <div ref="chartEl" class="hist-chart"></div>
+    <div class="hist-chart-wrap">
+      <div ref="chartEl" class="hist-chart"></div>
+      <div v-if="emptyHint" class="hist-empty">
+        <div class="empty-text">{{ emptyHint }}</div>
+      </div>
+    </div>
 
     <div class="hist-stats">
       <div class="stat"><label>查出点数</label><b>{{ stats.count || '--' }}</b></div>
@@ -149,6 +164,21 @@ const tags = computed(() => {
 const title = computed(() => {
   const t = tags.value.find(x => x.id === tagId.value)
   return `历史回放 · ${t ? t.name : ''}`
+})
+
+// 曲线空着的时侯给一句能照着做的话，而不是让人对着空白图猜。
+// 三种情况要分开说：没开落库、点了没开曲线记录、开了但这段时间确实没采到。
+const emptyHint = computed(() => {
+  if (points.value.length) return ''
+  if (!settings.value.enabled) return '落库未开启，暂无历史数据。请在下方打开「落库」开关。'
+  const t = tags.value.find(x => x.id === tagId.value)
+  if (t && !t.trendEnabled) {
+    return `「${t.name}」未启用曲线记录，落库只对同时启用了采集与曲线记录的点位生效。`
+  }
+  if (!range.value.count) {
+    return '库中还没有该点位的任何记录。落库开启后，下一次采集成功即开始写入。'
+  }
+  return '所选时间范围内没有记录，可切换到「全部」或放宽自定义时间。'
 })
 
 watch(() => props.visible, async v => {
@@ -255,6 +285,13 @@ async function onClearTag() {
   await loadRange()
   libStat.value = await GetHistoryStats()
   ElMessage.success('已清理')
+}
+
+// 提示条上的"立即开启"：落库开关生效要等下一个采集周期，这里刷新一下库统计
+async function onEnableRecord() {
+  settings.value.enabled = true
+  await onSaveSettings()
+  ElMessage.success('落库已开启，下一个采集周期开始记录')
 }
 
 async function onPrune() {
@@ -399,12 +436,72 @@ function stampText(ms) {
   color: #909399;
 }
 
+.hist-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  background: #fdf6ec;
+  border: 1px solid #f5dab1;
+  border-left: 3px solid #e6a23c;
+  border-radius: 4px;
+}
+
+.banner-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 50%;
+  background: #e6a23c;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.banner-text {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #8a6d3b;
+}
+
+.hist-chart-wrap {
+  position: relative;
+}
+
 .hist-chart {
   width: 100%;
   height: 320px;
   border: 1px solid #d7dee8;
   border-radius: 4px;
   background: #fff;
+}
+
+/* 空状态浮在图上但不吃鼠标事件，免得挡住下面的 dataZoom 拖动 */
+.hist-empty {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.empty-text {
+  max-width: 78%;
+  padding: 10px 16px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #7a869a;
+  background: rgba(244, 247, 251, 0.92);
+  border: 1px dashed #c3cede;
+  border-radius: 4px;
 }
 
 .hist-stats {

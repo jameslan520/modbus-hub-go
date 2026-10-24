@@ -19,9 +19,12 @@ func HistoryDir() string {
 	return filepath.Join(Dir(), "history")
 }
 
-// DefaultHistorySettings 首次运行的默认策略：默认关闭，保留 30 天、上限 512MB
+// DefaultHistorySettings 首次运行的默认策略：默认开启，保留 30 天、上限 512MB。
+// 之前默认关闭，结果现场打开历史查询一片空白，而实时曲线照常有数据——
+// 曲线走的是内存缓冲，跟落库开关无关，两处表现不一致很难解释。
+// 落库一旦开启就受保留天数与容量上限双重约束，磁盘不会失控。
 func DefaultHistorySettings() store.Settings {
-	return store.Settings{Enabled: false, RetentionDays: 30, MaxSizeMB: 512}
+	return store.Settings{Enabled: true, RetentionDays: 30, MaxSizeMB: 512}
 }
 
 // LoadHistorySettings 读取落库策略；读不到就用默认值

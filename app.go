@@ -207,9 +207,20 @@ func (a *App) GetValues(channelID string) []models.TagValue {
 	return a.hub.Values(channelID)
 }
 
-// WriteTag 单点写入
-func (a *App) WriteTag(channelID, tagID, value string) error {
-	return a.hub.WriteTag(channelID, tagID, value)
+// WriteTag 单点写入。mode 取 raw（原始值）/ hex（十六进制位模式）/ eng（工程值），
+// 空串按 raw 处理。
+func (a *App) WriteTag(channelID, tagID, value string, mode string) error {
+	return a.hub.WriteTag(channelID, tagID, value, models.ParseInputMode(mode))
+}
+
+// PreviewWrite 写入预览：不下发报文，只把输入口径换算成原始值与寄存器序列。
+// 界面靠它在按下"写入"之前核对到底会发出什么。
+func (a *App) PreviewWrite(channelID, tagID, value string, mode string) modbus.WritePreview {
+	tag, ok := a.hub.FindTag(channelID, tagID)
+	if !ok {
+		return modbus.WritePreview{Error: "未找到该点位"}
+	}
+	return modbus.PreviewWrite(tag, value, models.ParseInputMode(mode))
 }
 
 // WriteTags 批量连续写入

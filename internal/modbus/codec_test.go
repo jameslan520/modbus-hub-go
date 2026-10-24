@@ -361,3 +361,235 @@ func TestEnsureWritableConsecutive(t *testing.T) {
 		t.Fatal("含只读点应报错")
 	}
 }
+
+// ---------- 写入窗口的三种输入口径 ----------
+
+// 十六进制输入填的是"值的高字节在前"的位模式，跟点表十六进制列显示的一致；
+// 下发时再按本点字节顺序拆寄存器。这里把 Float32 3.14 在四种字序下都过一遍。
+func TestParseWriteInputHexFloat32(t *testing.T) {
+	const bits = "4048F5C3" // 3.14f 的 IEEE754 位模式
+	orders := []struct {
+		order models.ByteOrder
+		regs  []string
+	}{
+		{models.ByteOrderCDAB, []string{"0xF5C3", "0x4048"}},
+		{models.ByteOrderABCD, []string{"0x4048", "0xF5C3"}},
+		{models.ByteOrderBADC, []string{"0x4840", "0xC3F5"}},
+		{models.ByteOrderDCBA, []string{"0xC3F5", "0x4840"}},
+	}
+	for _, c := range orders {
+		tag := models.TagPoint{DataType: models.Float32, ByteOrder: c.order}
+		v, err := ParseWriteInput(tag, bits, models.InputModeHex)
+		if err != nil {
+			t.Fatalf("%s 十六进制解析失败：%v", c.order, err)
+		}
+		if got := math.Abs(ToFloat(v)-3.14) > 0.0001; got {
+			t.Fatalf("%s 解析出的值不对：%v", c.order, v)
+		}
+		p := PreviewWrite(tag, bits, models.InputModeHex)
+		if !p.OK {
+			t.Fatalf("%s 预览应成功，实际 %s", c.order, p.Error)
+		}
+		if len(p.Registers) != len(c.regs) {
+			t.Fatalf("%s 寄存器个数不对：%v", c.order, p.Registers)
+		}
+		for i := range c.regs {
+			if p.Registers[i] != c.regs[i] {
+				t.Fatalf("%s 第 %d 个寄存器应为 %s，实际 %s", c.order, i, c.regs[i], p.Registers[i])
+			}
+		}
+	}
+}
+
+// 十六进制输入要能容忍现场从各处复制粘贴过来的写法
+func TestParseWriteInputHexTolerant(t *testing.T) {
+	tag := models.TagPoint{DataType: models.UInt16}
+	cases := []struct {
+		in   string
+		want uint16
+	}{
+		{"1234", 0x1234},
+		{"0x1234", 0x1234},
+		{"0X1234", 0x1234},
+		{"1234h", 0x1234},
+		{"0x12 34", 0x1234},
+		{"12_34", 0x1234},
+		{"0xabcd", 0xABCD},
+		{"34", 0x0034}, // 位数不足高位补零
+	}
+	for _, c := range cases {
+		v, err := ParseWriteInput(tag, c.in, models.InputModeHex)
+		if err != nil {
+			t.Fatalf("%q 解析失败：%v", c.in, err)
+		}
+		if got := toUint16(v); got != c.want {
+			t.Fatalf("%q 应得到 0x%04X，实际 0x%04X", c.in, c.want, got)
+		}
+	}
+}
+
+func TestParseWriteInputHexBad(t *testing.T) {
+	tag := models.TagPoint{DataType: models.UInt16}
+	for _, in := range []string{"", "0x", "12G4", "12345"} {
+		if _, err := ParseWriteInput(tag, in, models.InputModeHex); err == nil {
+			t.Fatalf("%q 应解析失败", in)
+		}
+	}
+	// 32 位类型最多 8 位十六进制
+	f32 := models.TagPoint{DataType: models.Float32}
+	if _, err := ParseWriteInput(f32, "0011223344", models.InputModeHex); err == nil {
+		t.Fatal("Float32 填 10 位十六进制应报错")
+	}
+	// Double64 最多 16 位
+	f64 := models.TagPoint{DataType: models.Double64}
+	if v, err := ParseWriteInput(f64, "40091EB851EB851F", models.InputModeHex); err != nil {
+		t.Fatalf("Double64 16 位十六进制应通过：%v", err)
+	} else if math.Abs(ToFloat(v)-3.14) > 1e-9 {
+		t.Fatalf("Double64 解析值不对：%v", v)
+	}
+}
+
+// 工程值反算：raw = (eng − offset) ÷ scale
+func TestParseWriteInputEngineering(t *testing.T) {
+	tag := models.TagPoint{DataType: models.Float32, Scale: 0.1, Offset: 5}
+	// 工程值 12.5 → 原始值 (12.5-5)/0.1 = 75
+	v, err := ParseWriteInput(tag, "12.5", models.InputModeEng)
+	if err != nil {
+		t.Fatalf("反算失败：%v", err)
+	}
+	if got := ToFloat(v); math.Abs(got-75) > 1e-4 {
+		t.Fatalf("应反算出 75，实际 %v", got)
+	}
+
+	// 带单位也要认，界面上工程值是带单位显示的
+	if v2, err := ParseWriteInput(tag, "12.5 °C", models.InputModeEng); err != nil {
+		t.Fatalf("带单位反算失败：%v", err)
+	} else if math.Abs(ToFloat(v2)-75) > 1e-4 {
+		t.Fatalf("带单位应反算出 75，实际 %v", ToFloat(v2))
+	}
+
+	// 正算回去要能对上，证明读写是同一套公式
+	if got := ToFloat(v)*tag.Scale + tag.Offset; math.Abs(got-12.5) > 1e-4 {
+		t.Fatalf("正算回工程值应为 12.5，实际 %v", got)
+	}
+}
+
+// 整数类型反算出小数时要就近取整，并提示用户
+func TestParseWriteInputEngineeringRounds(t *testing.T) {
+	tag := models.TagPoint{DataType: models.UInt16, Scale: 0.3, Offset: 1}
+	// 工程值 10 → (10-1)/0.3 = 30，正好是整数
+	v, err := ParseWriteInput(tag, "10", models.InputModeEng)
+	if err != nil {
+		t.Fatalf("反算失败：%v", err)
+	}
+	if got := toUint16(v); got != 30 {
+		t.Fatalf("应得到 30，实际 %d", got)
+	}
+	p := PreviewWrite(tag, "10", models.InputModeEng)
+	if p.RoundNote != "" {
+		t.Fatalf("整数结果不该提示取整，实际 %q", p.RoundNote)
+	}
+
+	// 工程值 10.5 → (10.5-1)/0.3 = 31.666… → 就近取整 32
+	p2 := PreviewWrite(tag, "10.5", models.InputModeEng)
+	if !p2.OK {
+		t.Fatalf("预览应成功，实际 %s", p2.Error)
+	}
+	if p2.RawText != "32" {
+		t.Fatalf("应就近取整为 32，实际 %s", p2.RawText)
+	}
+	if p2.RoundNote == "" {
+		t.Fatal("非整数结果应给出取整提示")
+	}
+}
+
+func TestParseWriteInputEngineeringOutOfRange(t *testing.T) {
+	tag := models.TagPoint{DataType: models.UInt16, Scale: 1, Offset: 0}
+	if _, err := ParseWriteInput(tag, "-1", models.InputModeEng); err == nil {
+		t.Fatal("反算出负数应报错")
+	}
+	if _, err := ParseWriteInput(tag, "70000", models.InputModeEng); err == nil {
+		t.Fatal("反算超出 65535 应报错")
+	}
+	zero := models.TagPoint{DataType: models.Float32, Scale: 0, Offset: 0}
+	if _, err := ParseWriteInput(zero, "1", models.InputModeEng); err == nil {
+		t.Fatal("倍率为 0 应报错")
+	}
+}
+
+// 原始值口径必须不受倍率偏移影响：写什么就发什么
+func TestParseWriteInputRawIgnoresScale(t *testing.T) {
+	tag := models.TagPoint{DataType: models.Float32, Scale: 0.1, Offset: 5, DecimalPlaces: 1}
+	v, err := ParseWriteInput(tag, "75", models.InputModeRaw)
+	if err != nil {
+		t.Fatalf("原始值解析失败：%v", err)
+	}
+	if got := ToFloat(v); math.Abs(got-75) > 1e-4 {
+		t.Fatalf("原始值应是 75 本身，实际 %v", got)
+	}
+	// 工程值口径下同样是 75，得到的也必须是 75，两个口径只在界面上分流
+	p := PreviewWrite(tag, "75", models.InputModeRaw)
+	if p.RawText != "75" {
+		t.Fatalf("原始值预览应为 75，实际 %s", p.RawText)
+	}
+	// 工程值应显示 75*0.1+5=12.5
+	if p.EngText != "12.5" {
+		t.Fatalf("工程值应显示 12.5，实际 %s", p.EngText)
+	}
+}
+
+// 预览的公式要如实反映倍率与偏移，现场对着算一遍能对上
+func TestPreviewWriteFormula(t *testing.T) {
+	tag := models.TagPoint{DataType: models.Float32, Scale: 2, Offset: -1.5}
+	p := PreviewWrite(tag, "10", models.InputModeEng)
+	if !p.OK {
+		t.Fatalf("预览应成功，实际 %s", p.Error)
+	}
+	// raw = (10 - (-1.5)) / 2 = 5.75
+	if p.RawText != "5.75" {
+		t.Fatalf("应反算出 5.75，实际 %s", p.RawText)
+	}
+	if p.Formula != "原始值 = (工程值 + 1.5) ÷ 2 = 5.75" {
+		t.Fatalf("公式不对：%q", p.Formula)
+	}
+
+	tag2 := models.TagPoint{DataType: models.Float32, Scale: 1, Offset: 0}
+	p2 := PreviewWrite(tag2, "3.5", models.InputModeEng)
+	if p2.Formula != "原始值 = (工程值) ÷ 1 = 3.5" {
+		t.Fatalf("无偏移时的公式不对：%q", p2.Formula)
+	}
+}
+
+// 预览失败时只给原因，不下发也不带脏数据
+func TestPreviewWriteError(t *testing.T) {
+	tag := models.TagPoint{DataType: models.UInt16}
+	p := PreviewWrite(tag, "abc", models.InputModeRaw)
+	if p.OK {
+		t.Fatal("非法输入不应预览成功")
+	}
+	if p.Error == "" {
+		t.Fatal("应给出失败原因")
+	}
+	if len(p.Registers) != 0 || p.RawText != "" {
+		t.Fatalf("失败时不应带出寄存器与原始值：%+v", p)
+	}
+}
+
+// 批量写入也要认输入口径：给 hex 就按位模式解，不给就按原始值
+func TestEncodeBlockHonoursInputMode(t *testing.T) {
+	mk := func(id string, addr uint16) models.TagPoint {
+		return models.TagPoint{ID: id, Name: id, Address: addr,
+			FunctionCode: models.FCWriteMultipleRegisters, DataType: models.UInt16}
+	}
+	items := []WriteItem{
+		{Tag: mk("a", 0), Value: "0x0010", Mode: models.InputModeHex},
+		{Tag: mk("b", 1), Value: "32", Mode: models.InputModeRaw},
+	}
+	regs, err := EncodeBlock(items)
+	if err != nil {
+		t.Fatalf("编码失败：%v", err)
+	}
+	if len(regs) != 2 || regs[0] != 0x0010 || regs[1] != 32 {
+		t.Fatalf("寄存器序列不对：%#v", regs)
+	}
+}

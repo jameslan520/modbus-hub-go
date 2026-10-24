@@ -47,15 +47,15 @@ func (s Settings) Validate() Settings {
 
 // Stats 落库的占用情况
 type Stats struct {
-	Enabled     bool   `json:"enabled"`
-	TagCount    int    `json:"tagCount"`    // 有点位目录的数量
-	FileCount   int    `json:"fileCount"`   // 分片文件数
-	TotalBytes  int64  `json:"totalBytes"`  // 占用字节
-	OldestDay   string `json:"oldestDay"`   // 最早分片日期
-	NewestDay   string `json:"newestDay"`   // 最新分片日期
-	RetentionDays int  `json:"retentionDays"`
-	MaxSizeMB    int   `json:"maxSizeMB"`
-	Root         string `json:"root"`
+	Enabled       bool   `json:"enabled"`
+	TagCount      int    `json:"tagCount"`   // 有点位目录的数量
+	FileCount     int    `json:"fileCount"`  // 分片文件数
+	TotalBytes    int64  `json:"totalBytes"` // 占用字节
+	OldestDay     string `json:"oldestDay"`  // 最早分片日期
+	NewestDay     string `json:"newestDay"`  // 最新分片日期
+	RetentionDays int    `json:"retentionDays"`
+	MaxSizeMB     int    `json:"maxSizeMB"`
+	Root          string `json:"root"`
 }
 
 // Range 某个点位的数据覆盖范围
@@ -70,10 +70,10 @@ type Range struct {
 type History struct {
 	root string
 
-	mu       sync.Mutex
-	cfg      Settings
-	openFile *os.File
-	openKey  string // tagID + "/" + day，用于判断是否需要切换到新分片
+	mu        sync.Mutex
+	cfg       Settings
+	openFile  *os.File
+	openKey   string // tagID + "/" + day，用于判断是否需要切换到新分片
 	lastPrune time.Time
 }
 

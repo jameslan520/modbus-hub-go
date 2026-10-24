@@ -108,6 +108,7 @@ export namespace hub {
 	export class WriteTagRequest {
 	    tagId: string;
 	    value: string;
+	    mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new WriteTagRequest(source);
@@ -117,6 +118,7 @@ export namespace hub {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tagId = source["tagId"];
 	        this.value = source["value"];
+	        this.mode = source["mode"];
 	    }
 	}
 
@@ -229,6 +231,34 @@ export namespace modbus {
 	        this.dec = source["dec"];
 	        this.hex = source["hex"];
 	        this.plc = source["plc"];
+	    }
+	}
+	export class WritePreview {
+	    ok: boolean;
+	    error: string;
+	    mode: string;
+	    rawText: string;
+	    engText: string;
+	    hexText: string;
+	    registers: string[];
+	    formula: string;
+	    roundNote: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WritePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.error = source["error"];
+	        this.mode = source["mode"];
+	        this.rawText = source["rawText"];
+	        this.engText = source["engText"];
+	        this.hexText = source["hexText"];
+	        this.registers = source["registers"];
+	        this.formula = source["formula"];
+	        this.roundNote = source["roundNote"];
 	    }
 	}
 

@@ -82,6 +82,8 @@ export function ParseTagFile(arg1:string,arg2:string):Promise<tagio.Preview>;
 
 export function PickTagFile():Promise<string>;
 
+export function PreviewWrite(arg1:string,arg2:string,arg3:string,arg4:string):Promise<modbus.WritePreview>;
+
 export function PruneHistory():Promise<main.PruneResult>;
 
 export function QueryHistory(arg1:string,arg2:number,arg3:number,arg4:number):Promise<Array<trend.Point>>;
@@ -98,6 +100,6 @@ export function StopAll():Promise<void>;
 
 export function StopChannel(arg1:string):Promise<void>;
 
-export function WriteTag(arg1:string,arg2:string,arg3:string):Promise<void>;
+export function WriteTag(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function WriteTags(arg1:string,arg2:Array<hub.WriteTagRequest>):Promise<void>;

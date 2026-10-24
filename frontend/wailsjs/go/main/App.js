@@ -146,6 +146,10 @@ export function PickTagFile() {
   return window['go']['main']['App']['PickTagFile']();
 }
 
+export function PreviewWrite(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['PreviewWrite'](arg1, arg2, arg3, arg4);
+}
+
 export function PruneHistory() {
   return window['go']['main']['App']['PruneHistory']();
 }
@@ -178,8 +182,8 @@ export function StopChannel(arg1) {
   return window['go']['main']['App']['StopChannel'](arg1);
 }
 
-export function WriteTag(arg1, arg2, arg3) {
-  return window['go']['main']['App']['WriteTag'](arg1, arg2, arg3);
+export function WriteTag(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['WriteTag'](arg1, arg2, arg3, arg4);
 }
 
 export function WriteTags(arg1, arg2) {

@@ -93,7 +93,7 @@ func TestWriteOnStoppedChannel(t *testing.T) {
 	if err := h.SaveChannels([]models.ChannelConfig{cfg}); err != nil {
 		t.Fatalf("保存失败：%v", err)
 	}
-	if err := h.WriteTag(cfg.ID, cfg.Tags[0].ID, "1"); err == nil {
+	if err := h.WriteTag(cfg.ID, cfg.Tags[0].ID, "1", models.InputModeRaw); err == nil {
 		t.Fatal("通道未运行时写入应报错")
 	}
 	if err := h.WriteRegisters(cfg.ID, 0, []uint16{1}); err == nil {

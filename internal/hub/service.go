@@ -279,7 +279,7 @@ func (s *ChannelService) reportQuality(tags []models.TagPoint, values []models.T
 }
 
 // WriteTag 单点写入（写后回读）
-func (s *ChannelService) WriteTag(tagID, value string) error {
+func (s *ChannelService) WriteTag(tagID, value string, mode models.InputMode) error {
 	s.mu.Lock()
 	client := s.client
 	cfg := s.cfg
@@ -304,14 +304,14 @@ func (s *ChannelService) WriteTag(tagID, value string) error {
 		return fmt.Errorf("标签 %s 不可写", tag.Name)
 	}
 
-	raw, err := modbus.ParseInput(tag, value)
+	raw, err := modbus.ParseWriteInput(tag, value, mode)
 	if err != nil {
 		return fmt.Errorf("%s：%w", tag.Name, err)
 	}
 	if err := client.WriteTag(tag, raw); err != nil {
 		return err
 	}
-	s.log("Info", fmt.Sprintf("写入 %s = %s", tag.Name, value))
+	s.log("Info", fmt.Sprintf("写入 %s = %s（%s）", tag.Name, value, mode.Label()))
 	s.refresh([]models.TagPoint{tag})
 	return nil
 }
@@ -336,7 +336,11 @@ func (s *ChannelService) WriteTags(items []WriteTagRequest) error {
 		if !ok {
 			return fmt.Errorf("未找到标签: %s", req.TagID)
 		}
-		writeItems = append(writeItems, modbus.WriteItem{Tag: tag, Value: req.Value})
+		writeItems = append(writeItems, modbus.WriteItem{
+			Tag:   tag,
+			Value: req.Value,
+			Mode:  models.ParseInputMode(req.Mode),
+		})
 		tags = append(tags, tag)
 	}
 

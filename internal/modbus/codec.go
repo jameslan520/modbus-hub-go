@@ -226,6 +226,225 @@ func ParseInput(tag models.TagPoint, input string) (any, error) {
 	}
 }
 
+// ParseWriteInput 按输入口径把界面输入解析成写进寄存器的原始值。
+//
+// raw 原始值：直接按数据类型解析十进制（可带单位后缀）。
+// hex 十六进制：按 IEEE754 位模式解析，跟点表"十六进制"列显示的是同一套东西，
+//
+//	因此填的是"值的高字节在前"的正常顺序，下发时再按本点的字节顺序拆成寄存器。
+//
+// eng 工程值：现场读数，按 raw = (eng − offset) ÷ scale 反算。
+func ParseWriteInput(tag models.TagPoint, input string, mode models.InputMode) (any, error) {
+	switch mode {
+	case models.InputModeHex:
+		return parseHexBits(tag.DataType, input)
+	case models.InputModeEng:
+		return parseEngineering(tag, input)
+	default:
+		return ParseInput(tag, input)
+	}
+}
+
+// parseHexBits 解析十六进制位模式。
+// 容忍 0x 前缀、h/H 后缀、空格与下划线分组，大小写不限；
+// 位数不足时按高位补零（写 "FDB" 等同 "00000FDB"）。
+func parseHexBits(dt models.TagDataType, input string) (any, error) {
+	s := strings.ToLower(strings.TrimSpace(input))
+	s = strings.NewReplacer("0x", "", " ", "", "_", "", ",", "").Replace(s)
+	s = strings.TrimSuffix(s, "h")
+	if s == "" {
+		return nil, errors.New("请输入十六进制数值")
+	}
+	for _, c := range s {
+		isDigit := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+		if !isDigit {
+			return nil, fmt.Errorf("包含非十六进制字符：%q", string(c))
+		}
+	}
+	want := RegisterCount(dt) * 4 // 一个寄存器 4 个十六进制字符
+	if len(s) > want {
+		return nil, fmt.Errorf("%s 最多 %d 位十六进制（%d 个寄存器），当前 %d 位",
+			dataTypeText(dt), want, RegisterCount(dt), len(s))
+	}
+	s = strings.Repeat("0", want-len(s)) + s
+	bits, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
+		return nil, fmt.Errorf("十六进制解析失败：%w", err)
+	}
+	switch dt {
+	case models.UInt16:
+		return uint16(bits), nil
+	case models.Int32:
+		return int32(uint32(bits)), nil
+	case models.Float32:
+		return math.Float32frombits(uint32(bits)), nil
+	case models.Double64:
+		return math.Float64frombits(bits), nil
+	default:
+		return uint16(bits), nil
+	}
+}
+
+// parseEngineering 由工程值反算原始值：raw = (eng − offset) ÷ scale。
+// 反算结果可能落不到寄存器能表示的精度上（整数类型有小数、float32 有截断），
+// 这里统一就近取整/收敛，并由调用方通过预览告诉用户实际下发的是什么。
+func parseEngineering(tag models.TagPoint, input string) (any, error) {
+	raw, err := engineeringRaw(tag, input)
+	if err != nil {
+		return nil, err
+	}
+	return coerceRaw(tag, raw)
+}
+
+// engineeringRaw 只做反算，不做类型收敛，便于预览对比"理论值"与"实际下发值"
+func engineeringRaw(tag models.TagPoint, input string) (float64, error) {
+	s := StripUnit(strings.TrimSpace(input))
+	if s == "" {
+		return 0, errors.New("请输入工程值")
+	}
+	eng, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, errors.New("请输入合法的工程值数字")
+	}
+	if tag.Scale == 0 {
+		return 0, errors.New("该点位倍率为 0，无法由工程值反算原始值")
+	}
+	return (eng - tag.Offset) / tag.Scale, nil
+}
+
+// coerceRaw 把反算出来的理论值收敛到该数据类型真正能表示的值
+func coerceRaw(tag models.TagPoint, raw float64) (any, error) {
+	switch tag.DataType {
+	case models.UInt16:
+		r := math.Round(raw)
+		if r < 0 || r > 65535 {
+			return nil, fmt.Errorf("反算出的原始值 %.4f 超出 0~65535，无法写入", r)
+		}
+		return uint16(r), nil
+	case models.Int32:
+		r := math.Round(raw)
+		if r < math.MinInt32 || r > math.MaxInt32 {
+			return nil, fmt.Errorf("反算出的原始值 %.4f 超出 32 位整数范围", r)
+		}
+		return int32(r), nil
+	case models.Float32:
+		return float32(raw), nil
+	case models.Double64:
+		return raw, nil
+	default:
+		return uint16(math.Round(raw)), nil
+	}
+}
+
+// dataTypeText 数据类型的中文名，用于报错文案
+func dataTypeText(dt models.TagDataType) string {
+	switch dt {
+	case models.UInt16:
+		return "UInt16"
+	case models.Int32:
+		return "Int32"
+	case models.Float32:
+		return "Float32"
+	case models.Double64:
+		return "Double64"
+	default:
+		return "该类型"
+	}
+}
+
+// WritePreview 写入预览：把三个口径串起来，让现场在下发前看到
+// 原始值、工程值、以及真正要发出去的寄存器序列。
+type WritePreview struct {
+	OK        bool     `json:"ok"`        // 输入是否可解析
+	Error     string   `json:"error"`     // 不可解析时的原因
+	Mode      string   `json:"mode"`      // 输入口径
+	RawText   string   `json:"rawText"`   // 原始值（寄存器里的内容）
+	EngText   string   `json:"engText"`   // 工程值（含单位）
+	HexText   string   `json:"hexText"`   // 位模式十六进制
+	Registers []string `json:"registers"` // 按本点字节顺序排好的寄存器，如 ["0x0FDB","0x4049"]
+	Formula   string   `json:"formula"`   // 反算公式，工程值口径下才有
+	RoundNote string   `json:"roundNote"` // 精度损失提示，例如"已就近取整为 1234"
+}
+
+// PreviewWrite 解析输入并给出完整预览；解析失败时只填 Error，其余留空。
+func PreviewWrite(tag models.TagPoint, input string, mode models.InputMode) WritePreview {
+	p := WritePreview{Mode: string(mode)}
+	raw, err := ParseWriteInput(tag, input, mode)
+	if err != nil {
+		p.Error = err.Error()
+		return p
+	}
+	regs := EncodeRegisters(raw, tag)
+	p.OK = true
+	p.RawText = formatRawText(tag.DataType, raw)
+	p.EngText = FormatValue(raw, tag)
+	hexText, _ := BaseView(raw, tag.DataType)
+	p.HexText = hexText
+	p.Registers = make([]string, 0, len(regs))
+	for _, r := range regs {
+		p.Registers = append(p.Registers, fmt.Sprintf("0x%04X", r))
+	}
+	if mode == models.InputModeEng {
+		if exact, err := engineeringRaw(tag, input); err == nil {
+			// 偏移为 0 时括号里只剩"工程值"，拼完要去掉多余空格
+			lhs := strings.TrimSpace("工程值 " + formatSignedTerm(tag.Offset))
+			p.Formula = fmt.Sprintf("原始值 = (%s) ÷ %s = %s",
+				lhs, formatFloat(tag.Scale), formatRawText(tag.DataType, raw))
+			if note := roundNote(tag, raw, exact); note != "" {
+				p.RoundNote = note
+			}
+		}
+	}
+	return p
+}
+
+// formatRawText 原始值按类型打印，整数不带小数点
+func formatRawText(dt models.TagDataType, raw any) string {
+	switch dt {
+	case models.UInt16:
+		return strconv.FormatUint(uint64(toUint16(raw)), 10)
+	case models.Int32:
+		return strconv.FormatInt(int64(toInt32(raw)), 10)
+	case models.Float32:
+		return strconv.FormatFloat(float64(float32(ToFloat(raw))), 'g', -1, 32)
+	default:
+		return strconv.FormatFloat(ToFloat(raw), 'g', -1, 64)
+	}
+}
+
+// roundNote 工程值反算后如果有取整或精度收敛，给出一句提示
+func roundNote(tag models.TagPoint, raw any, exact float64) string {
+	switch tag.DataType {
+	case models.UInt16, models.Int32:
+		r := ToFloat(raw)
+		if math.Abs(exact-r) > 1e-9 {
+			return fmt.Sprintf("反算结果 %.6g 不是整数，已就近取整为 %.0f", exact, r)
+		}
+	case models.Float32:
+		f := float32(exact)
+		if float64(f) != exact {
+			return fmt.Sprintf("单精度存放，%.10g 会被收敛为 %.9g", exact, float64(f))
+		}
+	}
+	return ""
+}
+
+// formatFloat 去掉多余的尾随零，公式里看着干净些
+func formatFloat(v float64) string {
+	return strconv.FormatFloat(v, 'g', -1, 64)
+}
+
+// formatSignedTerm 把偏移项写成 "− 0.5" / "+ 2" 的形式，0 时省略
+func formatSignedTerm(v float64) string {
+	if v == 0 {
+		return ""
+	}
+	if v > 0 {
+		return "− " + formatFloat(v)
+	}
+	return "+ " + formatFloat(-v)
+}
+
 // StripUnit 去掉数值后面带的单位，例如 "12.5 °C" → "12.5"
 func StripUnit(input string) string {
 	if _, err := strconv.ParseFloat(input, 64); err == nil {

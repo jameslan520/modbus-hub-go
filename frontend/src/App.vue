@@ -114,6 +114,12 @@
       :tags="batchDialog.tags"
       @submit="onBatchSubmit"
     />
+    <WriteDialog
+      v-model:visible="writeDialog.visible"
+      :tag="writeDialog.tag"
+      :channel-id="writeDialog.channelId"
+      @submit="onWriteSubmit"
+    />
     <TrendDialog
       v-model:visible="trendDialog.visible"
       :tag="trendDialog.tag"
@@ -141,6 +147,7 @@ import TagTable from './components/TagTable.vue'
 import TagDialog from './components/TagDialog.vue'
 import TagImportDialog from './components/TagImportDialog.vue'
 import BatchWriteDialog from './components/BatchWriteDialog.vue'
+import WriteDialog from './components/WriteDialog.vue'
 import TrendDialog from './components/TrendDialog.vue'
 import HistoryDialog from './components/HistoryDialog.vue'
 import CalibrationDialog from './components/CalibrationDialog.vue'
@@ -238,6 +245,7 @@ function channelOf(id) {
 const channelDialog = ref({visible: false, isNew: false, data: null})
 const tagDialog = ref({visible: false, isNew: false, data: null})
 const batchDialog = ref({visible: false, tags: []})
+const writeDialog = ref({visible: false, tag: null, channelId: ''})
 const trendDialog = ref({visible: false, tag: null})
 const historyDialog = ref({visible: false, tag: null})
 const importDialog = ref({visible: false})
@@ -440,10 +448,19 @@ async function onTagSubmit(tag) {
   await refreshValues(ch.id)
 }
 
-async function onWriteTag(row, value) {
-  const channelID = row.channelId || currentId.value
+// 点表点「写入」只负责开对话框，具体值由对话框收，收完再回到这里下发
+function onWriteTag(row) {
+  writeDialog.value = {
+    visible: true,
+    tag: row,
+    channelId: row.channelId || currentId.value
+  }
+}
+
+async function onWriteSubmit(item) {
+  const channelID = writeDialog.value.channelId
   try {
-    await WriteTag(channelID, row.id, value)
+    await WriteTag(channelID, item.tagId, item.value, item.mode)
     ElMessage.success('写入成功')
     await refreshValues(channelID)
   } catch (e) {
