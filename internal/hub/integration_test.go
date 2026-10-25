@@ -1,11 +1,15 @@
 package hub
 
 import (
+	"fmt"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"modbus-hub-go/internal/frames"
+	"modbus-hub-go/internal/modbus"
 	"modbus-hub-go/internal/models"
 	"modbus-hub-go/internal/store"
 	"modbus-hub-go/internal/tagio"
@@ -274,4 +278,161 @@ func TestStopReleasesAlarms(t *testing.T) {
 
 func almost(a, b float64) bool {
 	return math.Abs(a-b) < 1e-9
+}
+
+// ---------- 通信报文 ----------
+
+// 从客户端钩子到界面查询的完整链路：抛一帧事件，缓冲里要能查到解析后的结果
+func TestRecordFrameEndToEnd(t *testing.T) {
+	h := newTestHub(t)
+	body := []byte{0x01, 0x03, 0x00, 0x00, 0x00, 0x02}
+	crc := modbus.CRC16(body)
+	frame := append(append([]byte{}, body...), byte(crc&0xFF), byte(crc>>8))
+
+	h.recordFrame(FrameEvent{
+		ChannelID:   "ch1",
+		ChannelName: "1号通道",
+		Direction:   modbus.FrameTx,
+		Data:        frame,
+	})
+
+	got := h.Frames("", "", "")
+	if len(got) != 1 {
+		t.Fatalf("应记录 1 帧，实际 %d", len(got))
+	}
+	r := got[0]
+	if r.ChannelID != "ch1" || r.ChannelName != "1号通道" {
+		t.Fatalf("通道归属不对：%+v", r)
+	}
+	if r.Direction != "tx" {
+		t.Fatalf("方向不对：%q", r.Direction)
+	}
+	if r.Slave != 1 || r.FuncCode != 3 {
+		t.Fatalf("解析出的从机/功能码不对：%+v", r)
+	}
+	if r.Level != string(frames.LevelOK) {
+		t.Fatalf("正常帧应标记为 ok，实际 %q", r.Level)
+	}
+	if r.Hex != "01 03 00 00 00 02 "+hexPair(crc) {
+		t.Fatalf("十六进制不对：%q", r.Hex)
+	}
+	if !strings.Contains(r.Summary, "读保持寄存器") {
+		t.Fatalf("摘要不对：%q", r.Summary)
+	}
+	if len(r.Fields) == 0 {
+		t.Fatal("应带逐字段明细，展开行要用")
+	}
+	if r.ChannelName != "1号通道" {
+		t.Fatalf("通道名不对：%q", r.ChannelName)
+	}
+}
+
+// 异常响应要染成 error，说明里写明从机给的异常原因
+func TestRecordFrameExceptionLevel(t *testing.T) {
+	h := newTestHub(t)
+	body := []byte{0x01, 0x83, 0x02}
+	crc := modbus.CRC16(body)
+	frame := append(append([]byte{}, body...), byte(crc&0xFF), byte(crc>>8))
+
+	h.recordFrame(FrameEvent{
+		ChannelID:   "ch1",
+		ChannelName: "1号通道",
+		Direction:   modbus.FrameRx,
+		Data:        frame,
+		Note:        "从机返回异常 0x83：非法数据地址",
+	})
+
+	got := h.Frames("", "", "")
+	if len(got) != 1 {
+		t.Fatalf("应记录 1 帧，实际 %d", len(got))
+	}
+	if got[0].Level != string(frames.LevelError) {
+		t.Fatalf("异常响应应染成 error，实际 %q", got[0].Level)
+	}
+	if !strings.Contains(got[0].Summary, "非法数据地址") {
+		t.Fatalf("摘要应写明异常原因，实际 %q", got[0].Summary)
+	}
+	// 只看异常时能滤出来
+	if got := h.Frames("", "rx", "非法数据地址"); len(got) != 1 {
+		t.Fatalf("按关键字应能查到，实际 %d", len(got))
+	}
+}
+
+// 重试标记本身不是故障，别把重试的请求染成警告色
+func TestRecordFrameRetryNotWarn(t *testing.T) {
+	h := newTestHub(t)
+	body := []byte{0x01, 0x03, 0x00, 0x00, 0x00, 0x02}
+	crc := modbus.CRC16(body)
+	frame := append(append([]byte{}, body...), byte(crc&0xFF), byte(crc>>8))
+
+	h.recordFrame(FrameEvent{
+		ChannelID:   "ch1",
+		ChannelName: "1号通道",
+		Direction:   modbus.FrameTx,
+		Data:        frame,
+		Note:        "第 2 次重试",
+	})
+	h.recordFrame(FrameEvent{
+		ChannelID:   "ch1",
+		ChannelName: "1号通道",
+		Direction:   modbus.FrameRx,
+		Data:        frame,
+		Note:        "响应超时（收到 3/8 字节）",
+	})
+
+	got := h.Frames("", "", "")
+	if len(got) != 2 {
+		t.Fatalf("应记录 2 帧，实际 %d", len(got))
+	}
+	if got[0].Level != string(frames.LevelOK) {
+		t.Fatalf("重试标记不该染成警告，实际 %q", got[0].Level)
+	}
+	if got[1].Level != string(frames.LevelWarn) {
+		t.Fatalf("超时应染成警告，实际 %q", got[1].Level)
+	}
+	if !strings.Contains(got[1].Note, "3/8") {
+		t.Fatalf("超时应写明收到多少字节，实际 %q", got[1].Note)
+	}
+}
+
+// 残帧（超时只收到几个字节）也要能记下来，并且不崩
+func TestRecordFrameTruncated(t *testing.T) {
+	h := newTestHub(t)
+	h.recordFrame(FrameEvent{
+		ChannelID:   "ch1",
+		ChannelName: "1号通道",
+		Direction:   modbus.FrameRx,
+		Data:        []byte{0x01, 0x03},
+		Note:        "响应超时（收到 2/8 字节）",
+	})
+	got := h.Frames("", "", "")
+	if len(got) != 1 {
+		t.Fatalf("残帧也要记录，实际 %d", len(got))
+	}
+	if got[0].Slave != 1 || got[0].FuncCode != 3 {
+		t.Fatalf("残帧也要认出从机与功能码：%+v", got[0])
+	}
+	if !strings.Contains(got[0].Summary, "残帧") {
+		t.Fatalf("摘要应说明是残帧，实际 %q", got[0].Summary)
+	}
+}
+
+// 清通道不能把别的通道报文一起清掉
+func TestClearFramesByChannel(t *testing.T) {
+	h := newTestHub(t)
+	h.recordFrame(FrameEvent{ChannelID: "ch1", ChannelName: "A", Direction: modbus.FrameTx, Data: []byte{0x01, 0x03, 0x00, 0x00}})
+	h.recordFrame(FrameEvent{ChannelID: "ch2", ChannelName: "B", Direction: modbus.FrameRx, Data: []byte{0x02, 0x03, 0x00, 0x00}})
+	h.ClearFrames("ch1")
+	rest := h.Frames("", "", "")
+	if len(rest) != 1 || rest[0].ChannelID != "ch2" {
+		t.Fatalf("只应清掉 ch1，实际剩 %+v", rest)
+	}
+	h.ClearFrames("")
+	if len(h.Frames("", "", "")) != 0 {
+		t.Fatal("全清后应为空")
+	}
+}
+
+func hexPair(crc uint16) string {
+	return fmt.Sprintf("%02X %02X", byte(crc&0xFF), byte(crc>>8))
 }

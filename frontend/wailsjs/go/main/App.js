@@ -18,6 +18,10 @@ export function ClearAllHistory() {
   return window['go']['main']['App']['ClearAllHistory']();
 }
 
+export function ClearFrames(arg1) {
+  return window['go']['main']['App']['ClearFrames'](arg1);
+}
+
 export function ClearHistory(arg1) {
   return window['go']['main']['App']['ClearHistory'](arg1);
 }
@@ -32,6 +36,10 @@ export function DownloadCalibration(arg1) {
 
 export function ExportAlarms() {
   return window['go']['main']['App']['ExportAlarms']();
+}
+
+export function ExportFrames(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportFrames'](arg1, arg2, arg3);
 }
 
 export function ExportHistory(arg1, arg2, arg3, arg4) {
@@ -76,6 +84,18 @@ export function GetBaudRates() {
 
 export function GetChannels() {
   return window['go']['main']['App']['GetChannels']();
+}
+
+export function GetFrameDetail(arg1) {
+  return window['go']['main']['App']['GetFrameDetail'](arg1);
+}
+
+export function GetFrameStats() {
+  return window['go']['main']['App']['GetFrameStats']();
+}
+
+export function GetFrames(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetFrames'](arg1, arg2, arg3);
 }
 
 export function GetHistoryRange(arg1) {

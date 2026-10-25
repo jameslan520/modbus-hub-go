@@ -1,6 +1,13 @@
 package modbus
 
-// CRC16 Modbus（多项式 0xA001，低位在前）
+// CRC16 Modbus（多项式 0xA001，低位在前）。
+// 导出来是给测试与工具用的：写用例时现场算出正确的 CRC，
+// 比手抄一个十六进制常量靠谱。
+func CRC16(data []byte) uint16 {
+	return crc16(data)
+}
+
+// crc16 Modbus（多项式 0xA001，低位在前）
 func crc16(data []byte) uint16 {
 	var crc uint16 = 0xFFFF
 	for _, b := range data {

@@ -3,6 +3,7 @@
 import {main} from '../models';
 import {models} from '../models';
 import {alarm} from '../models';
+import {frames} from '../models';
 import {store} from '../models';
 import {trend} from '../models';
 import {hub} from '../models';
@@ -18,6 +19,8 @@ export function ClearAlarmHistory():Promise<void>;
 
 export function ClearAllHistory():Promise<void>;
 
+export function ClearFrames(arg1:string):Promise<void>;
+
 export function ClearHistory(arg1:string):Promise<void>;
 
 export function ClearTrend(arg1:string):Promise<void>;
@@ -25,6 +28,8 @@ export function ClearTrend(arg1:string):Promise<void>;
 export function DownloadCalibration(arg1:main.CalibrationRequest):Promise<number>;
 
 export function ExportAlarms():Promise<string>;
+
+export function ExportFrames(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function ExportHistory(arg1:string,arg2:string,arg3:number,arg4:number):Promise<string>;
 
@@ -47,6 +52,12 @@ export function GetAlarmHistory(arg1:number):Promise<Array<alarm.Event>>;
 export function GetBaudRates():Promise<Array<number>>;
 
 export function GetChannels():Promise<Array<models.ChannelConfig>>;
+
+export function GetFrameDetail(arg1:number):Promise<frames.Record>;
+
+export function GetFrameStats():Promise<frames.Stats>;
+
+export function GetFrames(arg1:string,arg2:string,arg3:string):Promise<Array<frames.Record>>;
 
 export function GetHistoryRange(arg1:string):Promise<store.Range>;
 

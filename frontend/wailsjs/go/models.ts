@@ -43,6 +43,91 @@ export namespace alarm {
 
 }
 
+export namespace frames {
+	
+	export class Record {
+	    seq: number;
+	    time: string;
+	    timeMs: number;
+	    channelId: string;
+	    channelName: string;
+	    direction: string;
+	    slave: number;
+	    funcCode: number;
+	    length: number;
+	    hex: string;
+	    ascii: string;
+	    summary: string;
+	    note: string;
+	    level: string;
+	    fields?: modbus.FrameField[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Record(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.seq = source["seq"];
+	        this.time = source["time"];
+	        this.timeMs = source["timeMs"];
+	        this.channelId = source["channelId"];
+	        this.channelName = source["channelName"];
+	        this.direction = source["direction"];
+	        this.slave = source["slave"];
+	        this.funcCode = source["funcCode"];
+	        this.length = source["length"];
+	        this.hex = source["hex"];
+	        this.ascii = source["ascii"];
+	        this.summary = source["summary"];
+	        this.note = source["note"];
+	        this.level = source["level"];
+	        this.fields = this.convertValues(source["fields"], modbus.FrameField);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Stats {
+	    total: number;
+	    dropped: number;
+	    capacity: number;
+	    tx: number;
+	    rx: number;
+	    errors: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Stats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.total = source["total"];
+	        this.dropped = source["dropped"];
+	        this.capacity = source["capacity"];
+	        this.tx = source["tx"];
+	        this.rx = source["rx"];
+	        this.errors = source["errors"];
+	    }
+	}
+
+}
+
 export namespace hub {
 	
 	export class ChannelRuntime {
@@ -231,6 +316,22 @@ export namespace modbus {
 	        this.dec = source["dec"];
 	        this.hex = source["hex"];
 	        this.plc = source["plc"];
+	    }
+	}
+	export class FrameField {
+	    name: string;
+	    hex: string;
+	    text: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FrameField(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.hex = source["hex"];
+	        this.text = source["text"];
 	    }
 	}
 	export class WritePreview {

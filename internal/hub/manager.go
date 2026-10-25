@@ -3,11 +3,14 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"modbus-hub-go/internal/alarm"
 	"modbus-hub-go/internal/config"
+	"modbus-hub-go/internal/frames"
+	"modbus-hub-go/internal/modbus"
 	"modbus-hub-go/internal/models"
 	"modbus-hub-go/internal/store"
 	"modbus-hub-go/internal/tagio"
@@ -66,6 +69,8 @@ type Hub struct {
 	history *store.History
 	// histErr 每个点位上次报落库失败的时间，用来给失败日志节流
 	histErr map[string]time.Time
+	// frames 通信报文缓冲，各通道共用一份，界面按通道过滤
+	frames *frames.Store
 }
 
 func New(cb Callbacks) *Hub {
@@ -78,6 +83,7 @@ func New(cb Callbacks) *Hub {
 		trends:    trend.NewStore(),
 		history:   store.New(config.HistoryDir(), config.LoadHistorySettings()),
 		histErr:   make(map[string]time.Time),
+		frames:    frames.New(0), // 0 表示用默认容量
 	}
 	h.alarms = alarm.New(func(ev alarm.Event) {
 		if h.cb.OnAlarm != nil {
@@ -99,7 +105,59 @@ func (h *Hub) callbacks() Callbacks {
 				h.cb.OnValues(channelID, values)
 			}
 		},
+		OnFrame: h.recordFrame,
 	}
+}
+
+// recordFrame 把一帧原始报文解析后落进缓冲。
+// 解析放在这里而不是客户端里：客户端只管收发，
+// 报文怎么解释属于展示层的事，缓存的也是解析后的结果。
+func (h *Hub) recordFrame(ev FrameEvent) {
+	info := modbus.DescribeFrame(ev.Data, ev.Direction)
+	now := time.Now()
+	rec := frames.Record{
+		Time:        modbus.FrameStamp(now),
+		TimeMs:      now.UnixMilli(),
+		ChannelID:   ev.ChannelID,
+		ChannelName: ev.ChannelName,
+		Direction:   string(ev.Direction),
+		Slave:       info.Slave,
+		FuncCode:    info.FuncCode,
+		Length:      len(ev.Data),
+		Hex:         modbus.FrameHex(ev.Data),
+		ASCII:       modbus.FrameASCII(ev.Data),
+		Summary:     info.Summary,
+		Note:        ev.Note,
+		Level:       string(frameLevel(info, ev.Note)),
+		Fields:      info.Fields,
+	}
+	// 摘要里补上从机号，列表上不用展开就知道这帧跟谁通信
+	if info.Exception {
+		rec.Summary = fmt.Sprintf("从机 %d %s", info.Slave, info.Summary)
+	}
+	h.frames.Append(rec)
+}
+
+// frameLevel 判断这一帧的严重程度：异常响应与收发失败算 error，
+// CRC 错与地址/功能码不符算 warn（会重试，还有救），其余正常。
+func frameLevel(info modbus.FrameInfo, note string) frames.Level {
+	if note != "" {
+		// 重试标记本身不是故障，别把它染成警告色
+		if strings.HasPrefix(note, "第 ") && strings.HasSuffix(note, "次重试") {
+			return frames.LevelOK
+		}
+		if info.Exception {
+			return frames.LevelError
+		}
+		return frames.LevelWarn
+	}
+	if info.Exception {
+		return frames.LevelError
+	}
+	if !info.CRCOK && len(note) == 0 {
+		return frames.LevelWarn
+	}
+	return frames.LevelOK
 }
 
 // handleValues 报警判定 + 历史落库，并把报警方向回填进 TagValue
@@ -703,4 +761,28 @@ func (h *Hub) findLocked(id string) (models.ChannelConfig, bool) {
 		}
 	}
 	return models.ChannelConfig{}, false
+}
+
+// Frames 查询通信报文。channelID 为空表示所有通道，dir 为空表示收发都要。
+func (h *Hub) Frames(channelID, dir, keyword string) []frames.Record {
+	out := h.frames.List(channelID, dir, keyword)
+	if out == nil {
+		out = []frames.Record{}
+	}
+	return out
+}
+
+// FrameDetail 取单条报文的完整字段，展开行时用
+func (h *Hub) FrameDetail(seq int64) (frames.Record, bool) {
+	return h.frames.Get(seq)
+}
+
+// FrameStats 报文缓冲概况
+func (h *Hub) FrameStats() frames.Stats {
+	return h.frames.Stats()
+}
+
+// ClearFrames 清空报文缓冲；channelID 为空时清全部
+func (h *Hub) ClearFrames(channelID string) {
+	h.frames.Clear(channelID)
 }

@@ -16,6 +16,10 @@ const (
 	retryWait  = 250 * time.Millisecond
 )
 
+// FrameHook 报文钩子：把每一帧的原始字节交给外部记录。
+// note 写这一帧的状态说明（正常为空；超时、CRC 错、异常响应时写明原因）。
+type FrameHook func(dir FrameDir, data []byte, note string)
+
 // RTUClient 单通道 Modbus RTU 主站（自建协议栈，不依赖第三方 Modbus 库）
 type RTUClient struct {
 	portName  string
@@ -28,6 +32,10 @@ type RTUClient struct {
 	mu        sync.Mutex
 	txCount   int64
 	rxCount   int64
+	// hookMu 单独保护 onFrame：transaction 整段持着 mu，
+	// 钩子里再抢 mu 就是死锁，所以不能复用
+	hookMu  sync.Mutex
+	onFrame FrameHook
 }
 
 // NewRTUClient 依据通道配置构造客户端
@@ -110,6 +118,28 @@ func (c *RTUClient) IsConnected() bool { return c.port != nil }
 func (c *RTUClient) TxCount() int64 { return atomic.LoadInt64(&c.txCount) }
 func (c *RTUClient) RxCount() int64 { return atomic.LoadInt64(&c.rxCount) }
 
+// SetFrameHook 设置报文钩子。必须在 Connect 之前调用，
+// 钩子本身只做记录，抛出去的活儿交给调用方，协议栈不依赖它。
+func (c *RTUClient) SetFrameHook(h FrameHook) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	c.onFrame = h
+}
+
+// emitFrame 上报一帧；钩子为空时直接返回，零开销
+func (c *RTUClient) emitFrame(dir FrameDir, data []byte, note string) {
+	c.hookMu.Lock()
+	h := c.onFrame
+	c.hookMu.Unlock()
+	if h == nil {
+		return
+	}
+	// 复制一份再交出去：底层切片可能被后续读写复用，外部异步渲染时不能拿着它
+	buf := make([]byte, len(data))
+	copy(buf, data)
+	h(dir, buf, note)
+}
+
 func (c *RTUClient) readLoop() {
 	buf := make([]byte, 256)
 	for {
@@ -142,6 +172,8 @@ func (c *RTUClient) drain() {
 	}
 }
 
+// readExact 读满 n 字节。超时或串口关闭时也要把已收到的部分返回去——
+// 排查现场问题时，"从机回了 3 个字节就断了"比干巴巴一句"超时"有用得多。
 func (c *RTUClient) readExact(n int, timeout time.Duration) ([]byte, error) {
 	out := make([]byte, 0, n)
 	timer := time.NewTimer(timeout)
@@ -151,9 +183,9 @@ func (c *RTUClient) readExact(n int, timeout time.Duration) ([]byte, error) {
 		case b := <-c.rxCh:
 			out = append(out, b)
 		case <-timer.C:
-			return nil, fmt.Errorf("响应超时（收到 %d/%d 字节）", len(out), n)
+			return out, fmt.Errorf("响应超时（收到 %d/%d 字节）", len(out), n)
 		case <-c.stopCh:
-			return nil, errors.New("串口已关闭")
+			return out, errors.New("串口已关闭")
 		}
 	}
 	return out, nil
@@ -177,24 +209,34 @@ func (c *RTUClient) transaction(req []byte, respLen int) ([]byte, error) {
 
 		c.drain()
 		atomic.AddInt64(&c.txCount, 1)
+		retryMark := ""
+		if attempt > 0 {
+			retryMark = fmt.Sprintf("第 %d 次重试", attempt+1)
+		}
+		c.emitFrame(FrameTx, req, retryMark)
 		if _, err := c.port.Write(req); err != nil {
 			lastErr = fmt.Errorf("发送失败: %w", err)
+			c.emitFrame(FrameTx, req, "发送失败："+err.Error())
 			continue
 		}
 
 		resp, err := c.readExact(respLen, c.timeout)
 		if err != nil {
 			lastErr = err
+			// 残帧也要记下来：从机回了半截就断了，是最典型的现场故障之一
+			c.emitFrame(FrameRx, resp, err.Error())
 			continue
 		}
 		atomic.AddInt64(&c.rxCount, 1)
 
 		if !checkCRC(resp) {
 			lastErr = errors.New("CRC 校验失败")
+			c.emitFrame(FrameRx, resp, "CRC 校验失败，已丢弃并重发")
 			continue
 		}
 		if resp[0] != req[0] {
 			lastErr = fmt.Errorf("响应从机地址不符（期望 %d，收到 %d）", req[0], resp[0])
+			c.emitFrame(FrameRx, resp, lastErr.Error())
 			continue
 		}
 		if resp[1]&0x80 != 0 {
@@ -202,12 +244,17 @@ func (c *RTUClient) transaction(req []byte, respLen int) ([]byte, error) {
 			if len(resp) > 2 {
 				code = resp[2]
 			}
-			return nil, fmt.Errorf("从机返回异常 0x%02X：%s", resp[1], exceptionText(code))
+			err = fmt.Errorf("从机返回异常 0x%02X：%s", resp[1], exceptionText(code))
+			// 异常响应不重试，但必须记下来——这是从机在明说"你这条请求我不认"
+			c.emitFrame(FrameRx, resp, err.Error())
+			return nil, err
 		}
 		if resp[1] != req[1] {
 			lastErr = fmt.Errorf("响应功能码不符（期望 0x%02X，收到 0x%02X）", req[1], resp[1])
+			c.emitFrame(FrameRx, resp, lastErr.Error())
 			continue
 		}
+		c.emitFrame(FrameRx, resp, "")
 		return resp, nil
 	}
 	return nil, lastErr

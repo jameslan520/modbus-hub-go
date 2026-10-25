@@ -17,6 +17,17 @@ type Callbacks struct {
 	OnValues func(channelID string, values []models.TagValue)
 	OnState  func(channelID string, state models.ChannelState)
 	OnAlarm  func(alarm.Event)
+	// OnFrame 把每一帧通信报文抛出去，交给 Hub 统一落进报文缓冲
+	OnFrame func(FrameEvent)
+}
+
+// FrameEvent 一帧原始报文，从客户端钩子转发给 Hub 时带上通道归属
+type FrameEvent struct {
+	ChannelID   string
+	ChannelName string
+	Direction   modbus.FrameDir
+	Data        []byte
+	Note        string
 }
 
 // ChannelService 单个串口通道的轮询与采集
@@ -126,6 +137,20 @@ func (s *ChannelService) Start() error {
 	s.log("Info", fmt.Sprintf("正在连接 %s...", cfg.PortName))
 
 	client := modbus.NewRTUClient(cfg)
+	// 报文钩子：这里是唯一知道"这帧属于哪个通道"的地方，
+	// 客户端本身只管收发，通道归属由服务补上再抛给 Hub。
+	client.SetFrameHook(func(dir modbus.FrameDir, data []byte, note string) {
+		if s.cb.OnFrame == nil {
+			return
+		}
+		s.cb.OnFrame(FrameEvent{
+			ChannelID:   cfg.ID,
+			ChannelName: cfg.Name,
+			Direction:   dir,
+			Data:        data,
+			Note:        note,
+		})
+	})
 	if err := client.Connect(); err != nil {
 		s.mu.Lock()
 		s.state = models.StateError

@@ -12,6 +12,7 @@ import (
 	"modbus-hub-go/internal/calib"
 	"modbus-hub-go/internal/config"
 	"modbus-hub-go/internal/export"
+	"modbus-hub-go/internal/frames"
 	"modbus-hub-go/internal/hub"
 	"modbus-hub-go/internal/modbus"
 	"modbus-hub-go/internal/models"
@@ -601,6 +602,93 @@ func (a *App) ExportHistory(tagID, tagName string, fromMs, toMs int64) (string, 
 	}
 	a.emitLog("Info", "", fmt.Sprintf("已导出历史数据 %d 行：%s", len(rows), path))
 	return path, nil
+}
+
+// ---------- 通信报文 ----------
+
+// GetFrames 查询通信报文。channelID 为空取全部通道，dir 空串取收发双向。
+func (a *App) GetFrames(channelID, dir, keyword string) []frames.Record {
+	return a.hub.Frames(channelID, dir, keyword)
+}
+
+// GetFrameDetail 取单条报文的逐字段明细（列表里为省流量不带 fields）
+func (a *App) GetFrameDetail(seq int) (frames.Record, error) {
+	rec, ok := a.hub.FrameDetail(int64(seq))
+	if !ok {
+		return frames.Record{}, errors.New("该报文已被新数据覆盖，请重新查询")
+	}
+	return rec, nil
+}
+
+// GetFrameStats 报文缓冲概况：条数、容量、收发与异常计数
+func (a *App) GetFrameStats() frames.Stats {
+	return a.hub.FrameStats()
+}
+
+// ClearFrames 清空报文缓冲；channelID 为空时清全部
+func (a *App) ClearFrames(channelID string) {
+	a.hub.ClearFrames(channelID)
+}
+
+// ExportFrames 导出当前过滤条件下的报文为 CSV
+func (a *App) ExportFrames(channelID, dir, keyword string) (string, error) {
+	recs := a.hub.Frames(channelID, dir, keyword)
+	if len(recs) == 0 {
+		return "", errors.New("当前过滤条件下没有报文")
+	}
+	rows := make([][]string, 0, len(recs))
+	for _, r := range recs {
+		rows = append(rows, []string{
+			r.Time,
+			frameDirText(r.Direction),
+			r.ChannelName,
+			frameSlaveText(r.Slave),
+			frameFuncText(r.FuncCode),
+			strconv.Itoa(r.Length),
+			r.Hex,
+			r.ASCII,
+			r.Summary,
+			r.Note,
+		})
+	}
+	name := "通信报文"
+	if channelID != "" {
+		if c, ok := a.hub.Find(channelID); ok {
+			name = safeFileName(c.Name) + "-报文"
+		}
+	}
+	path, err := a.pickSavePath("导出通信报文", name+".csv")
+	if err != nil || path == "" {
+		return path, err
+	}
+	header := []string{"时间", "方向", "通道", "从机", "功能码",
+		"字节数", "报文（十六进制）", "ASCII", "摘要", "说明"}
+	if err := export.WriteCSV(path, header, rows); err != nil {
+		return "", err
+	}
+	a.emitLog("Info", "", fmt.Sprintf("已导出通信报文 %d 行：%s", len(rows), path))
+	return path, nil
+}
+
+func frameDirText(dir string) string {
+	if dir == string(modbus.FrameTx) {
+		return "发送"
+	}
+	return "接收"
+}
+
+func frameSlaveText(slave int) string {
+	if slave < 0 {
+		return "--"
+	}
+	return strconv.Itoa(slave)
+}
+
+func frameFuncText(fc int) string {
+	if fc < 0 {
+		return "--"
+	}
+	return fmt.Sprintf("0x%02X", fc)
 }
 
 // ---------- 标定 ----------

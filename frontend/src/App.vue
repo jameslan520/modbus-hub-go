@@ -81,6 +81,9 @@
                 @refresh="refreshAlarms"
               />
             </el-tab-pane>
+            <el-tab-pane label="通信报文" name="frame">
+              <FramePanel :channels="channels" :current-id="currentId" />
+            </el-tab-pane>
           </el-tabs>
         </div>
       </div>
@@ -153,6 +156,7 @@ import HistoryDialog from './components/HistoryDialog.vue'
 import CalibrationDialog from './components/CalibrationDialog.vue'
 import LogPanel from './components/LogPanel.vue'
 import AlarmPanel from './components/AlarmPanel.vue'
+import FramePanel from './components/FramePanel.vue'
 import {
   AckAlarm,
   AckAllAlarms,
