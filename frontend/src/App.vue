@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell">
     <div class="app-header">
-      <span class="app-title">Modbus RTU 多通道采集系统</span>
+      <span class="app-title">Modbus 多通道采集系统</span>
       <div class="app-actions">
         <el-button type="primary" size="small" @click="onStartAll">全部启动</el-button>
         <el-button size="small" @click="onStopAll">全部停止</el-button>

@@ -1,4 +1,4 @@
-# Modbus RTU 多通道采集系统（Go / Wails v2 版）
+# Modbus 多通道采集系统（Go / Wails v2 版）
 
 原 C# WPF 版（`jameslan520/modbus-hub`）的 Go 重构。技术栈：**Wails v2.16 + Go 1.27 + Vue 3 + Element Plus + ECharts**，
 产出单文件 exe（约 15 MB，依赖系统 WebView2 运行时），目标机无需安装 .NET。

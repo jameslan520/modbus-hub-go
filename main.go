@@ -15,7 +15,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "Modbus RTU 多通道采集系统",
+		Title:     "Modbus 多通道采集系统",
 		Width:     1400,
 		Height:    860,
 		MinWidth:  1024,
