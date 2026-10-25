@@ -113,7 +113,9 @@ func (h *Hub) callbacks() Callbacks {
 // 解析放在这里而不是客户端里：客户端只管收发，
 // 报文怎么解释属于展示层的事，缓存的也是解析后的结果。
 func (h *Hub) recordFrame(ev FrameEvent) {
-	info := modbus.DescribeFrame(ev.Data, ev.Direction)
+	// 串口与网口的字节布局完全不同（一个是 地址+PDU+CRC，一个是 MBAP+PDU），
+	// 走哪个解析器由这一帧自带的协议标识决定
+	info := modbus.DescribeProtocolFrame(ev.Protocol, ev.Data, ev.Direction)
 	now := time.Now()
 	rec := frames.Record{
 		Time:        modbus.FrameStamp(now),
@@ -121,6 +123,7 @@ func (h *Hub) recordFrame(ev FrameEvent) {
 		ChannelID:   ev.ChannelID,
 		ChannelName: ev.ChannelName,
 		Direction:   string(ev.Direction),
+		Protocol:    info.Protocol,
 		Slave:       info.Slave,
 		FuncCode:    info.FuncCode,
 		Length:      len(ev.Data),
@@ -337,7 +340,7 @@ func (h *Hub) Channels() []models.ChannelConfig {
 	return out
 }
 
-// SaveChannels 保存配置；运行中的通道按串口参数变化决定是否自动重连
+// SaveChannels 保存配置；运行中的通道按连接参数变化决定是否自动重连
 func (h *Hub) SaveChannels(list []models.ChannelConfig) error {
 	for i := range list {
 		list[i].Sanitize()
@@ -359,7 +362,8 @@ func (h *Hub) SaveChannels(list []models.ChannelConfig) error {
 		if !isRunning || !existed {
 			continue
 		}
-		if prev.SerialSignature() != cfg.SerialSignature() {
+		// 串口参数或 IP/端口变了才重建连接；从机号、点表这些跟着报文走，改不用重连
+		if prev.ConnSignature() != cfg.ConnSignature() {
 			restart = append(restart, cfg)
 			continue
 		}

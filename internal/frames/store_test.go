@@ -174,7 +174,7 @@ func TestRecordFromRealFrame(t *testing.T) {
 	crc := modbus.CRC16(body)
 	frame := append(append([]byte{}, body...), byte(crc&0xFF), byte(crc>>8))
 
-	info := modbus.DescribeFrame(frame, modbus.FrameTx)
+	info := modbus.DescribeRTUFrame(frame, modbus.FrameTx)
 	if !info.CRCOK {
 		t.Fatal("现场算出的 CRC 应校验通过")
 	}

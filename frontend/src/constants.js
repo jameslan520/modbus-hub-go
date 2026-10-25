@@ -1,5 +1,30 @@
 // 与 Go 端 models 保持一致的枚举与选项
 
+// 通道的连接方式。数值与 Go 端 models.ConnType 一致，
+// 零值（串口 RTU）必须与旧配置反序列化后的结果相同，否则旧 channels.json 会串味。
+export const CONN_TYPES = [
+  {value: 0, label: '串口 RTU', tip: '走 COM 口，RS485 总线上挂一个或多个从机'},
+  {value: 1, label: 'Modbus TCP', tip: '走网口直连设备 502 端口，或连串口服务器转出来的网口'}
+]
+
+export const DEFAULT_TCP_PORT = 502
+
+export function connTypeMeta(v) {
+  return CONN_TYPES.find(c => c.value === Number(v)) || CONN_TYPES[0]
+}
+
+export function connTypeLabel(v) {
+  return connTypeMeta(v).label
+}
+
+// 通道列表上的一行连接摘要：串口显示 COM 口与波特率，网口显示 IP:端口
+export function channelEndpointText(ch) {
+  if (Number(ch.connType) === 1) {
+    return `${ch.host || ''}:${ch.port || DEFAULT_TCP_PORT}`
+  }
+  return `${ch.portName || ''} · ${ch.baudRate || ''}`
+}
+
 export const DATA_TYPES = [
   {value: 0, label: 'UInt16'},
   {value: 1, label: 'Float32'},

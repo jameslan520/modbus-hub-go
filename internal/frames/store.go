@@ -38,6 +38,7 @@ type Record struct {
 	ChannelID   string `json:"channelId"`   // 所属通道，空串表示未归属
 	ChannelName string `json:"channelName"` // 通道名，界面显示
 	Direction   string `json:"direction"`   // tx 发送 / rx 接收
+	Protocol    string `json:"protocol"`    // RTU / TCP，展开详情时说明这一帧来自哪种链路
 	Slave       int    `json:"slave"`       // 从机地址，解析不出为 -1
 	FuncCode    int    `json:"funcCode"`    // 功能码，解析不出为 -1
 	Length      int    `json:"length"`      // 帧字节数

@@ -28,6 +28,9 @@ type FrameEvent struct {
 	Direction   modbus.FrameDir
 	Data        []byte
 	Note        string
+	// Protocol RTU / TCP。同一次运行里两种链路可能并存，
+	// 报文解析得先知道这一帧该按哪种格式拆
+	Protocol string
 }
 
 // ChannelService 单个串口通道的轮询与采集
@@ -36,7 +39,7 @@ type ChannelService struct {
 
 	mu      sync.Mutex
 	cfg     models.ChannelConfig
-	client  *modbus.RTUClient
+	client  *modbus.Master
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
 	state   models.ChannelState
@@ -123,7 +126,7 @@ func (s *ChannelService) Values() []models.TagValue {
 	return out
 }
 
-// Start 打开串口并开始轮询
+// Start 建立连接（串口打开端口 / 网口拨号）并开始轮询
 func (s *ChannelService) Start() error {
 	s.mu.Lock()
 	if s.client != nil {
@@ -134,9 +137,11 @@ func (s *ChannelService) Start() error {
 	cfg := s.cfg
 	s.mu.Unlock()
 	s.emitState()
-	s.log("Info", fmt.Sprintf("正在连接 %s...", cfg.PortName))
+	s.log("Info", fmt.Sprintf("正在连接 %s（%s）...", cfg.EndpointText(), cfg.ConnType.Label()))
 
-	client := modbus.NewRTUClient(cfg)
+	// 串口走 RTU、网口走 TCP，介质选择由这一个工厂收口；
+	// 连接 Variant 建立之后，轮询与写入的代码完全一致。
+	client := modbus.NewMaster(cfg)
 	// 报文钩子：这里是唯一知道"这帧属于哪个通道"的地方，
 	// 客户端本身只管收发，通道归属由服务补上再抛给 Hub。
 	client.SetFrameHook(func(dir modbus.FrameDir, data []byte, note string) {
@@ -149,6 +154,7 @@ func (s *ChannelService) Start() error {
 			Direction:   dir,
 			Data:        data,
 			Note:        note,
+			Protocol:    client.Protocol(),
 		})
 	})
 	if err := client.Connect(); err != nil {
@@ -167,7 +173,7 @@ func (s *ChannelService) Start() error {
 	s.state = models.StateConnected
 	s.mu.Unlock()
 	s.emitState()
-	s.log("Info", fmt.Sprintf("通道已连接: %s @ %d", cfg.PortName, cfg.BaudRate))
+	s.log("Info", fmt.Sprintf("通道已连接: %s（%s）", cfg.EndpointText(), cfg.ConnType.Label()))
 
 	s.wg.Add(1)
 	go s.pollLoop(stop)

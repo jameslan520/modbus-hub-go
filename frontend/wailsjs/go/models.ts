@@ -52,6 +52,7 @@ export namespace frames {
 	    channelId: string;
 	    channelName: string;
 	    direction: string;
+	    protocol: string;
 	    slave: number;
 	    funcCode: number;
 	    length: number;
@@ -74,6 +75,7 @@ export namespace frames {
 	        this.channelId = source["channelId"];
 	        this.channelName = source["channelName"];
 	        this.direction = source["direction"];
+	        this.protocol = source["protocol"];
 	        this.slave = source["slave"];
 	        this.funcCode = source["funcCode"];
 	        this.length = source["length"];
@@ -433,12 +435,15 @@ export namespace models {
 	}
 	export class ChannelConfig {
 	    id: string;
+	    connType: number;
 	    name: string;
 	    portName: string;
 	    baudRate: number;
 	    dataBits: number;
 	    parity: number;
 	    stopBits: number;
+	    host?: string;
+	    port?: number;
 	    readTimeout: number;
 	    writeTimeout: number;
 	    pollingIntervalMs: number;
@@ -460,12 +465,15 @@ export namespace models {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.connType = source["connType"];
 	        this.name = source["name"];
 	        this.portName = source["portName"];
 	        this.baudRate = source["baudRate"];
 	        this.dataBits = source["dataBits"];
 	        this.parity = source["parity"];
 	        this.stopBits = source["stopBits"];
+	        this.host = source["host"];
+	        this.port = source["port"];
 	        this.readTimeout = source["readTimeout"];
 	        this.writeTimeout = source["writeTimeout"];
 	        this.pollingIntervalMs = source["pollingIntervalMs"];

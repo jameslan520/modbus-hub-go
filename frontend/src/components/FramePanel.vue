@@ -57,6 +57,9 @@
           </span>
         </template>
       </el-table-column>
+      <el-table-column label="协议" width="54">
+        <template #default="{row}">{{ row.protocol || '--' }}</template>
+      </el-table-column>
       <el-table-column v-if="!channelId" prop="channelName" label="通道" width="110" show-overflow-tooltip />
       <el-table-column label="从机" width="56">
         <template #default="{row}">{{ row.slave < 0 ? '--' : row.slave }}</template>
@@ -86,8 +89,11 @@
           <label>方向</label><b>{{ detail.direction === 'tx' ? '发送' : '接收' }}</b>
         </div>
         <div class="dl-row">
-          <label>通道</label><b>{{ detail.channelName || '--' }}</b>
+          <label>协议</label><b>{{ detail.protocol || '--' }}</b>
           <label>字节数</label><b>{{ detail.length }}</b>
+        </div>
+        <div class="dl-row">
+          <label>通道</label><b>{{ detail.channelName || '--' }}</b>
         </div>
         <div class="dl-hex">
           <div class="hex-line mono">{{ detail.hex }}</div>

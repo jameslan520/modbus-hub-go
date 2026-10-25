@@ -1,6 +1,9 @@
 package models
 
-import "strings"
+import (
+	"net"
+	"strings"
+)
 
 // Modbus RTU 功能码：03 读保持寄存器、06 写单个寄存器、16 写多个寄存器
 const (
@@ -214,6 +217,67 @@ type TagPoint struct {
 	AlarmActionText string   `json:"alarmActionText,omitempty"`
 }
 
+// ConnType 通道的连接方式。
+//
+// 零值必须是串口 RTU：旧版 channels.json 没有这个字段，反序列化后就是 0，
+// 行为要与旧版完全一致（一律走串口）。
+type ConnType int
+
+const (
+	// ConnRTU 串口 RTU（默认值，与旧版一致）
+	ConnRTU ConnType = iota
+	// ConnTCP Modbus TCP/IP（网口直连或从串口服务器转出来的网口）
+	ConnTCP
+)
+
+// DefaultTCPPort Modbus TCP 的公认端口
+const DefaultTCPPort = 502
+
+var connTypeNames = map[ConnType]string{
+	ConnRTU: "rtu",
+	ConnTCP: "tcp",
+}
+
+var connTypeLabels = map[ConnType]string{
+	ConnRTU: "串口 RTU",
+	ConnTCP: "Modbus TCP",
+}
+
+func (t ConnType) String() string {
+	if n, ok := connTypeNames[t]; ok {
+		return n
+	}
+	return connTypeNames[ConnRTU]
+}
+
+// Label 界面下拉显示的中文名
+func (t ConnType) Label() string {
+	if n, ok := connTypeLabels[t]; ok {
+		return n
+	}
+	return connTypeLabels[ConnRTU]
+}
+
+func (t ConnType) IsValid() bool {
+	_, ok := connTypeNames[t]
+	return ok
+}
+
+// ParseConnType 把界面传来的字符串转成连接方式，空值与非法值一律当串口
+func ParseConnType(s string) ConnType {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "tcp", "modbustcp", "modbus-tcp":
+		return ConnTCP
+	case "rtu", "serial":
+		return ConnRTU
+	default:
+		return ConnRTU
+	}
+}
+
+// IsTCP 是否走网口
+func (t ConnType) IsTCP() bool { return t == ConnTCP }
+
 // AlarmKind 报警方向。空串表示未报警。
 type AlarmKind string
 
@@ -303,15 +367,30 @@ type CalibrationPoint struct {
 	Standard float64 `json:"standard"`
 }
 
-// ChannelConfig 串口通道配置（一个通道对应一个 COM 口）
+// ChannelConfig 通道配置。
+//
+// 一个通道对应一条物理链路：串口就是一个 COM 口，网口就是一个 IP + 端口。
+// 两种链路上的 Modbus 点对点问答完全相同，差别只在介质参数，
+// 所以串口参数与 TCP 参数都放在这一个结构里，靠 ConnType 区分用哪一半。
 type ChannelConfig struct {
-	ID                string     `json:"id"`
-	Name              string     `json:"name"`
-	PortName          string     `json:"portName"`
-	BaudRate          int        `json:"baudRate"`
-	DataBits          int        `json:"dataBits"`
-	Parity            int        `json:"parity"`
-	StopBits          int        `json:"stopBits"`
+	ID string `json:"id"`
+	// ConnType 连接方式；旧配置没有这个字段，反序列化为 0（串口），与旧版一致
+	ConnType ConnType `json:"connType"`
+	Name     string   `json:"name"`
+
+	// 串口参数（ConnType = rtu 时有效）
+	PortName string `json:"portName"`
+	BaudRate int    `json:"baudRate"`
+	DataBits int    `json:"dataBits"`
+	Parity   int    `json:"parity"`
+	StopBits int    `json:"stopBits"`
+
+	// TCP 参数（ConnType = tcp 时有效）。
+	// Host 可以是 IP（192.168.1.10）也可以是主机名；Port 留空时补 502。
+	// 整个通道共用一个从机号（写进 MBAP 的单元标识），多从机走网关的场景用 255 或网关自报的号。
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+
 	ReadTimeout       int        `json:"readTimeout"`
 	WriteTimeout      int        `json:"writeTimeout"`
 	PollingIntervalMs int        `json:"pollingIntervalMs"`
@@ -329,15 +408,41 @@ type ChannelConfig struct {
 	CalibrationPoints    []CalibrationPoint   `json:"calibrationPoints"`
 }
 
-// SerialSignature 串口参数签名，用于判断是否需要重连
-func (c ChannelConfig) SerialSignature() string {
-	return c.PortName + "|" + itoa(c.BaudRate) + "|" + itoa(c.DataBits) +
+// ConnSignature 连接参数签名，变了就必须重连。
+//
+// 之前只签串口参数（老名字 SerialSignature），加了 TCP 之后必须把 IP/端口
+// 也算进去：改了目标 IP 却还在旧连接上轮询，是最难发现的一类故障。
+// 从机号不算在里头——它随每帧报文下发，改不用重连。
+func (c ChannelConfig) ConnSignature() string {
+	if c.ConnType.IsTCP() {
+		return "tcp|" + c.Host + "|" + itoa(c.Port)
+	}
+	return "rtu|" + c.PortName + "|" + itoa(c.BaudRate) + "|" + itoa(c.DataBits) +
 		"|" + itoa(c.Parity) + "|" + itoa(c.StopBits)
+}
+
+// EndpointText 连接目标的显示文本，日志与界面摘要都用这一份：
+// 串口是 "COM1 · 9600"，网口是 "192.168.1.10:502"。
+func (c ChannelConfig) EndpointText() string {
+	if c.ConnType.IsTCP() {
+		return net.JoinHostPort(strings.TrimSpace(c.Host), itoa(c.Port))
+	}
+	return c.PortName + " · " + itoa(c.BaudRate)
 }
 
 func (c *ChannelConfig) Sanitize() {
 	c.Name = strings.TrimSpace(c.Name)
 	c.PortName = strings.TrimSpace(c.PortName)
+	c.Host = strings.TrimSpace(c.Host)
+	if !c.ConnType.IsValid() {
+		c.ConnType = ConnRTU
+	}
+	// 端口没填或填了非法值一律补默认端口。
+	// 串口通道也顺手补上：界面上把连接方式切到 TCP 时不用重新敲一遍，
+	// 也省得通道启动到一半才发现拨不出去。
+	if c.Port < 1 || c.Port > 65535 {
+		c.Port = DefaultTCPPort
+	}
 	if c.SlaveID < 1 || c.SlaveID > 247 {
 		from := byte(1)
 		if len(c.Tags) > 0 && c.Tags[0].SlaveID >= 1 && c.Tags[0].SlaveID <= 247 {
@@ -403,13 +508,16 @@ func isFinite(v float64) bool {
 // NewChannelConfig 生成一个带默认值的通道
 func NewChannelConfig(name string) ChannelConfig {
 	return ChannelConfig{
-		ID:                     newID(),
-		Name:                   name,
-		PortName:               "COM1",
-		BaudRate:               9600,
-		DataBits:               8,
-		Parity:                 ParityNone,
-		StopBits:               StopBitsOne,
+		ID:       newID(),
+		Name:     name,
+		PortName: "COM1",
+		BaudRate: 9600,
+		DataBits: 8,
+		Parity:   ParityNone,
+		StopBits: StopBitsOne,
+		// TCP 参数给一组能用的默认值：界面上把连接方式切到 TCP 时不用重新敲一遍
+		Host:                   "192.168.1.10",
+		Port:                   DefaultTCPPort,
 		ReadTimeout:            1000,
 		WriteTimeout:           1000,
 		PollingIntervalMs:      1000,

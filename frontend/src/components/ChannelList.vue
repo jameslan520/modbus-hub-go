@@ -25,7 +25,11 @@
           <el-tag size="small" :type="stateMeta(ch.id).type">{{ stateMeta(ch.id).label }}</el-tag>
         </div>
         <div class="channel-meta mono">
-          {{ ch.portName }} · {{ ch.baudRate }} · {{ parityLabel(ch.parity) }} · {{ stopBitsLabel(ch.stopBits) }}
+          <el-tag size="small" effect="plain" round>{{ connTypeLabel(ch.connType) }}</el-tag>
+          {{ channelEndpointText(ch) }}
+          <template v-if="Number(ch.connType) !== 1">
+            · {{ parityLabel(ch.parity) }} · {{ stopBitsLabel(ch.stopBits) }}
+          </template>
         </div>
         <div class="channel-meta mono">
           从机 {{ ch.slaveId }} · {{ ch.pollingIntervalMs }}ms · 发 {{ rt(ch.id).txCount }} / 收 {{ rt(ch.id).rxCount }}
@@ -43,7 +47,7 @@
 </template>
 
 <script setup>
-import {STATE_META, parityLabel, stopBitsLabel} from '../constants'
+import {STATE_META, channelEndpointText, connTypeLabel, parityLabel, stopBitsLabel} from '../constants'
 
 const props = defineProps({
   channels: {type: Array, default: () => []},
@@ -120,6 +124,9 @@ function stateMeta(id) {
   font-size: 12px;
   color: #6b7280;
   margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .channel-actions {

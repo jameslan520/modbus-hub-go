@@ -417,6 +417,67 @@ func TestRecordFrameTruncated(t *testing.T) {
 	}
 }
 
+// 同一个 App 里串口与网口可以并存，TCP 的帧必须按 MBAP 拆，不能用 RTU 的那套
+func TestRecordFrameTCP(t *testing.T) {
+	h := newTestHub(t)
+	// 事务标识 0x0007、单元标识 1、读保持寄存器 起始 0 数量 2
+	frame := []byte{0x00, 0x07, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x02}
+	h.recordFrame(FrameEvent{
+		ChannelID:   "ch-tcp",
+		ChannelName: "网口通道",
+		Direction:   modbus.FrameTx,
+		Data:        frame,
+		Protocol:    modbus.ProtoTCP,
+	})
+	// 同一条 I/O 上再抛一帧串口的，按 RTU 拆
+	rtu := append(append([]byte{}, 0x01, 0x03, 0x00, 0x00, 0x00, 0x02), 0xC4, 0x0B)
+	h.recordFrame(FrameEvent{
+		ChannelID:   "ch-rtu",
+		ChannelName: "串口通道",
+		Direction:   modbus.FrameTx,
+		Data:        rtu,
+		Protocol:    modbus.ProtoRTU,
+	})
+
+	got := h.Frames("", "", "")
+	if len(got) != 2 {
+		t.Fatalf("应记录 2 帧，实际 %d", len(got))
+	}
+	tcp := got[0]
+	if tcp.Protocol != modbus.ProtoTCP {
+		t.Fatalf("TCP 帧应标成 TCP，实际 %q", tcp.Protocol)
+	}
+	if tcp.Slave != 1 || tcp.FuncCode != 3 {
+		t.Fatalf("单元标识与功能码不对：%+v", tcp)
+	}
+	if tcp.Length != 12 {
+		t.Fatalf("TCP 帧长应算上 MBAP 头，实际 %d", tcp.Length)
+	}
+	if tcp.Level != string(frames.LevelOK) {
+		t.Fatalf("正常 TCP 帧应标成 ok，实际 %q", tcp.Level)
+	}
+	if !strings.Contains(tcp.Summary, "读保持寄存器") {
+		t.Fatalf("摘要不对：%q", tcp.Summary)
+	}
+	detail, ok := h.FrameDetail(tcp.Seq)
+	if !ok {
+		t.Fatal("应能按序号查到报文详情")
+	}
+	var hasMBAP bool
+	for _, f := range detail.Fields {
+		if f.Name == "事务标识" {
+			hasMBAP = true
+		}
+	}
+	if !hasMBAP {
+		t.Fatal("TCP 帧的详情里应有 MBAP 事务标识字段")
+	}
+	// 串口帧不能被 TCP 解析器串味
+	if got[1].Protocol != modbus.ProtoRTU || got[1].Length != 8 {
+		t.Fatalf("串口帧应按 RTU 记录，实际 %+v", got[1])
+	}
+}
+
 // 清通道不能把别的通道报文一起清掉
 func TestClearFramesByChannel(t *testing.T) {
 	h := newTestHub(t)
